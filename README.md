@@ -29,11 +29,11 @@ A Shiny application for monitoring stock portfolio performance with data sourced
 
 1. **Service Account Credentials**:
    - You need a Google service account JSON credentials file
-   - Place this file at: `creds/original-return-107905-3b03bf4c17bf.json`
+   - Place this file at: `creds/<credential file>.json`
    - The service account email must have access to your Google Sheet
 
 2. **Sheet Structure**:
-   - **Sheet URL**: `https://docs.google.com/spreadsheets/d/1oievySvQ3m2ojs1On27EKpZ4rqrbd0Ksi_rnQf8YMyY/edit?usp=sharing`
+   - **Sheet URL**: `https://docs.google.com/spreadsheets/d/<file id>>`
    - **Sheet Name**: `TD Holdings`
    - **Required Columns**:
      - `Date`: Date of the data (app automatically uses most recent)
@@ -51,7 +51,7 @@ A Shiny application for monitoring stock portfolio performance with data sourced
    create_directories()
    ```
 
-3. **Place your credentials file** at `creds/original-return-107905-3b03bf4c17bf.json`
+3. **Place your credentials file** at `creds/<credential file>.json`
 
 4. **Run setup check**:
    ```r

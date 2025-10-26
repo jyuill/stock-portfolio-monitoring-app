@@ -126,7 +126,7 @@ launch_app <- function() {
   cat("\n=== Launching Stock Portfolio Monitor ===\n")
   
   # Check if all required files exist
-  required_files <- c("ui.R", "server.R")
+  required_files <- c("ui.R", "server.R", "global_data.R")
   missing_files <- required_files[!file.exists(required_files)]
   
   if (length(missing_files) > 0) {
@@ -143,10 +143,23 @@ launch_app <- function() {
   cat("\nTesting Google Sheets connection (optional)...\n")
   test_sheets_connection()
   
+  # Load global data before starting the app
+  cat("\n📊 Loading portfolio data...\n")
+  tryCatch({
+    source("global_data.R")
+    cat("✓ Portfolio data loaded successfully\n")
+    cat("✓ Found", nrow(PORTFOLIO_DATA), "unique symbols\n")
+    cat("✓ Data from:", format(PORTFOLIO_DATE, "%Y-%m-%d"), "\n")
+  }, error = function(e) {
+    cat("✗ Error loading portfolio data:", e$message, "\n")
+    cat("Please check your credentials and Google Sheets access.\n")
+    return(FALSE)
+  })
+  
   # Launch the app
   cat("\n🚀 Starting Shiny app...\n")
   cat("The app will open in your default browser.\n")
-  cat("Use the 'Refresh Data' button to load your portfolio data.\n\n")
+  cat("Use the 'Refresh Data' button to load price data.\n\n")
   
   shiny::runApp(launch.browser = TRUE)
 }

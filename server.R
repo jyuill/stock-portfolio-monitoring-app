@@ -3,242 +3,41 @@ library(dplyr)
 library(ggplot2)
 library(plotly)
 library(DT)
-library(googlesheets4)
 library(quantmod)
 library(lubridate)
 library(stringr)
+library(tidyr)
+
+# Load portfolio data from Google Sheets
+source('global_data.R')
 
 server <- function(input, output, session) {
   
-  # Initialize Google Sheets authentication with JSON credentials
-  observe({
-    tryCatch({
-      # Use service account authentication with the actual JSON file
-      gs4_auth(path = "creds/original-return-107905-3b03bf4c17bf.json")
-      showNotification("Google Sheets authentication successful!", type = "success")
-    }, error = function(e) {
-      showNotification(paste("Authentication failed:", e$message), type = "error")
-    })
+  # Use pre-loaded data from global_data.R (note: lowercase variable names)
+  portfolio_data_reactive <- reactive({
+    return(portfolio_data)  # Using lowercase from global_data.R
   })
   
-  # Load portfolio data from Google Sheets
-  portfolio_data <- reactive({
+  # Price data is already loaded in global_data.R, make it reactive for refresh
+  price_data_reactive <- reactive({
     req(input$refresh_data)
-    
-    withProgress(message = 'Loading portfolio data...', value = 0, {
-      tryCatch({
-        # Read the specific Google Sheet
-        sheet_url <- "https://docs.google.com/spreadsheets/d/1oievySvQ3m2ojs1On27EKpZ4rqrbd0Ksi_rnQf8YMyY/edit?usp=sharing"
-        
-        incProgress(0.3, detail = "Connecting to Google Sheets...")
-        
-        # Read the TD Holdings sheet starting from A3 (skipping header rows)
-        raw_data <- read_sheet(sheet_url, sheet = "TD Holdings", range = "A3:G1000", col_names = TRUE)
-        
-        incProgress(0.5, detail = "Processing data...")
-        
-        # Clean column names and filter for most recent date
-        portfolio <- raw_data |>
-          # Remove completely empty rows
-          filter(!if_all(everything(), is.na)) |>
-          # Convert Date column to proper date format
-          mutate(Date = as.Date(Date)) |>
-          # Remove rows where Date is NA
-          filter(!is.na(Date)) |>
-          # Filter for the most recent date
-          filter(Date == max(Date, na.rm = TRUE)) |>
-          # Clean and standardize symbol names
-          mutate(
-            Symbol = str_trim(str_to_upper(Symbol)),
-            Quantity = as.numeric(Quantity),
-            Account = str_trim(Account)
-          ) |>
-          # Remove rows with missing symbols or zero quantity
-          filter(!is.na(Symbol), !is.na(Quantity), Quantity > 0, Symbol != "") |>
-          # Group by symbol and sum quantities across accounts
-          group_by(Symbol) |>
-          summarise(
-            Total_Quantity = sum(Quantity, na.rm = TRUE),
-            Accounts = paste(unique(Account[!is.na(Account)]), collapse = ", "),
-            Date = first(Date),
-            .groups = "drop"
-          ) |>
-          arrange(Symbol)
-        
-        incProgress(1.0, detail = "Data loaded successfully!")
-        
-        showNotification(paste("Loaded", nrow(portfolio), "unique assets from", 
-                             format(first(portfolio$Date), "%Y-%m-%d")), 
-                        type = "success")
-        
-        return(portfolio)
-        
-      }, error = function(e) {
-        showNotification(paste("Error loading data:", e$message), type = "error")
-        return(NULL)
-      })
-    })
+    return(price_data)  # Using pre-loaded price data
   })
   
-  # Fetch price data for all symbols
-  price_data <- reactive({
-    req(portfolio_data())
-    
-    symbols <- portfolio_data()$Symbol
-    
-    withProgress(message = 'Fetching price data...', value = 0, {
-      
-      # Calculate date ranges
-      end_date <- Sys.Date()
-      start_date <- end_date - years(2) # Get 2 years of data for safety
-      
-      price_list <- list()
-      total_symbols <- length(symbols)
-      
-      for (i in seq_along(symbols)) {
-        symbol <- symbols[i]
-        
-        incProgress(1/total_symbols, detail = paste("Fetching", symbol, "..."))
-        
-        tryCatch({
-          # Try different symbol formats if needed
-          symbol_variants <- c(symbol, paste0(symbol, ".TO")) # Add .TO for TSX stocks if needed
-          
-          success <- FALSE
-          for (variant in symbol_variants) {
-            tryCatch({
-              price_data_raw <- getSymbols(variant, 
-                                         src = "yahoo",
-                                         from = start_date,
-                                         to = end_date,
-                                         auto.assign = FALSE,
-                                         warnings = FALSE)
-              
-              if (!is.null(price_data_raw) && nrow(price_data_raw) > 0) {
-                # Extract adjusted close prices
-                adj_close_col <- paste0(variant, ".Adjusted")
-                if (!adj_close_col %in% colnames(price_data_raw)) {
-                  adj_close_col <- paste0(variant, ".Close")
-                }
-                
-                if (adj_close_col %in% colnames(price_data_raw)) {
-                  prices <- data.frame(
-                    Date = index(price_data_raw),
-                    Price = as.numeric(price_data_raw[, adj_close_col]),
-                    Symbol = symbol
-                  ) |>
-                    filter(!is.na(Price)) |>
-                    arrange(Date)
-                  
-                  if (nrow(prices) > 0) {
-                    price_list[[symbol]] <- prices
-                    success <- TRUE
-                    break
-                  }
-                }
-              }
-            }, error = function(e) {
-              # Silent error, try next variant
-            })
-          }
-          
-          if (!success) {
-            showNotification(paste("Could not fetch data for", symbol), type = "warning")
-          }
-          
-        }, error = function(e) {
-          showNotification(paste("Error fetching", symbol, ":", e$message), type = "warning")
-        })
-      }
-      
-      if (length(price_list) > 0) {
-        combined_prices <- bind_rows(price_list)
-        showNotification(paste("Successfully fetched price data for", 
-                             length(unique(combined_prices$Symbol)), "symbols"), 
-                        type = "success")
-        return(combined_prices)
-      } else {
-        showNotification("No price data could be fetched", type = "error")
-        return(NULL)
-      }
-    })
+  # Performance data is already calculated in global_data.R
+  performance_data_reactive <- reactive({
+    req(input$refresh_data)
+    return(performance_data)  # Using pre-calculated performance data
   })
   
-  # Calculate performance metrics
-  performance_data <- reactive({
-    req(price_data())
-    
-    withProgress(message = 'Calculating performance...', value = 0, {
-      
-      # Define time periods
-      periods <- list(
-        "1d" = 1,
-        "7d" = 7,
-        "30d" = 30,
-        "90d" = 90,
-        "6m" = 180,
-        "1y" = 365
-      )
-      
-      current_date <- Sys.Date()
-      
-      performance_list <- list()
-      symbols <- unique(price_data()$Symbol)
-      
-      for (i in seq_along(symbols)) {
-        symbol <- symbols[i]
-        incProgress(1/length(symbols), detail = paste("Processing", symbol, "..."))
-        
-        symbol_prices <- price_data() |>
-          filter(Symbol == symbol) |>
-          arrange(Date)
-        
-        if (nrow(symbol_prices) > 0) {
-          current_price <- tail(symbol_prices$Price, 1)
-          
-          performance_row <- data.frame(Symbol = symbol, Current_Price = current_price)
-          
-          for (period_name in names(periods)) {
-            days_back <- periods[[period_name]]
-            target_date <- current_date - days(days_back)
-            
-            # Find the closest available price to the target date
-            historical_price <- symbol_prices |>
-              filter(Date <= target_date) |>
-              tail(1)
-            
-            if (nrow(historical_price) > 0) {
-              pct_change <- ((current_price - historical_price$Price) / historical_price$Price) * 100
-              performance_row[[period_name]] <- round(pct_change, 2)
-            } else {
-              performance_row[[period_name]] <- NA
-            }
-          }
-          
-          performance_list[[symbol]] <- performance_row
-        }
-      }
-      
-      if (length(performance_list) > 0) {
-        performance_df <- bind_rows(performance_list)
-        return(performance_df)
-      } else {
-        return(NULL)
-      }
-    })
-  })
-  
-  # Render portfolio summary
+  # Render portfolio summary using pre-loaded data
   output$portfolio_summary <- renderText({
-    if (!is.null(portfolio_data())) {
-      paste0(
-        "Portfolio loaded: ", nrow(portfolio_data()), " unique assets",
-        " | Data from: ", format(first(portfolio_data()$Date), "%B %d, %Y"),
-        " | Total positions: ", sum(portfolio_data()$Total_Quantity > 0, na.rm = TRUE)
-      )
-    } else {
-      "No portfolio data loaded"
-    }
+    paste0(
+      "Portfolio loaded: ", nrow(portfolio_data), " unique assets",
+      " | Data from: ", format(max(portfolio_data$Date), "%B %d, %Y"),
+      " | Total positions: ", sum(portfolio_data$Total_Quantity > 0, na.rm = TRUE),
+      " | Price data for: ", length(unique(price_data$Symbol)), " symbols"
+    )
   })
   
   # Filter performance data based on user inputs
@@ -380,11 +179,11 @@ server <- function(input, output, session) {
       }, error = function(e) {
         message(paste("Could not fetch data for", symbol, ":", e$message))
       })
-    }
+  # Filter performance data based on user inputs
+  filtered_performance <- reactive({
+    req(performance_data_reactive())
     
-    if (length(price_list) > 0) {
-      return(bind_rows(price_list))
-    } else {
+    perf_data <- performance_data_reactive()
       return(NULL)
     }
   }
@@ -441,16 +240,16 @@ server <- function(input, output, session) {
           incProgress(0.5, detail = paste("Fetching price data for", length(symbols), "symbols..."))
           price_data <- get_price_data(symbols)
           values$price_data <- price_data
-          
+                                       "<sub>Portfolio data from ", format(max(portfolio_data$Date), "%Y-%m-%d"), "</sub>")))
           # Calculate performance
           incProgress(0.8, detail = "Calculating performance metrics...")
           performance_data <- calculate_performance(price_data)
           values$performance_data <- performance_data
-          
-          values$last_updated <- Sys.time()
-          
-          # Update asset filter choices
-          updateSelectizeInput(session, "asset_filter",
+    req(filtered_performance())
+    
+    # Join with portfolio data to show quantities
+    table_data <- filtered_performance() |>
+      left_join(portfolio_data, by = "Symbol") |>er",
                                choices = symbols,
                                selected = symbols)
         } else {
@@ -632,3 +431,13 @@ server <- function(input, output, session) {
     paste(stats, collapse = "\n")
   })
 }
+  # Add session statistics output
+  output$session_stats <- renderText({
+    paste0(
+      "Portfolio symbols: ", nrow(portfolio_data), "\n",
+      "Symbols with price data: ", length(unique(price_data$Symbol)), "\n",
+      "Total price records: ", nrow(price_data), "\n",
+      "Performance calculations: ", nrow(performance_data), "\n",
+      "Data loaded: ", format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+    )
+  })
