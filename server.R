@@ -91,10 +91,10 @@ server <- function(input, output, session) {
                                        "<sub>Portfolio data from ", 
                                        format(max(portfolio_data$Date), "%Y-%m-%d"), 
                                        "</sub>"),
-                         pad = list(t = 20, b=20),
-                        font = list(size = 20, color = "green", style = "italic"),
+                         pad = list(t = 0, b=20), # no effect
+                         font = list(size = 18, color = "green", style = "italic"), # only size, color has effect
                       subtitle = list(text = paste0("Percentage change across different time periods. Data as of ", Sys.Date()))),
-            margin = list(t = 40, b = 40, l = 40, r = 20))
+            margin = list(t = 80, b = 40, l = 40, r = 20)) # controls position of data block
   })
   
   # Render performance table
