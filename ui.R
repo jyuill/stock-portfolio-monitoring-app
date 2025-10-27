@@ -26,7 +26,9 @@ ui <- dashboardPage(
         .small-box {
           border-radius: 5px;
         }
-      "))
+      ")),
+      # additional custom CSS
+      tags$link(rel = "stylesheet", type = "text/css", href = "custom.css")
     ),
     
     tabItems(
@@ -46,7 +48,7 @@ ui <- dashboardPage(
         fluidRow(
           box(
             title = "Performance Filters", status = "info", solidHeader = TRUE,
-            width = 4,
+            width = 3,
             textInput("symbol_filter", 
                      "Filter Symbols (comma-separated):",
                      placeholder = "e.g., AAPL, GOOGL, TSLA"),
@@ -68,8 +70,8 @@ ui <- dashboardPage(
           
           box(
             title = "Performance Heatmap", status = "success", solidHeader = TRUE,
-            width = 8,
-            plotlyOutput("performance_heatmap", height = "500px")
+            width = 9,
+            plotlyOutput("performance_heatmap", height = "600px")
           )
         )
       ),
