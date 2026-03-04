@@ -104,9 +104,10 @@ server <- function(input, output, session) {
     # Join with portfolio data to show quantities
     table_data <- filtered_performance() |>
       left_join(portfolio_data, by = "Symbol") |>
-      select(Symbol, Current_Price, Total_Quantity, Accounts, `1d`, `7d`, `30d`, `90d`, `6m`, `1y`) |>
+      select(Symbol, Current_Price, Average_Cost, Total_Quantity, Accounts, `1d`, `7d`, `30d`, `90d`, `6m`, `1y`) |>
       mutate(
         Current_Price = round(Current_Price, 2),
+        Average_Cost = round(Average_Cost, 2),
         Total_Quantity = round(Total_Quantity, 2)
       )
     

@@ -30,36 +30,141 @@ tryCatch({
 cat("Loading portfolio data from Google Sheets...\n")
 portfolio_data <- tryCatch({
   sheet_url <- "https://docs.google.com/spreadsheets/d/1oievySvQ3m2ojs1On27EKpZ4rqrbd0Ksi_rnQf8YMyY/edit?usp=sharing"
-  
-  # Read the TD Holdings sheet starting from A5
-  raw_data <- read_sheet(sheet_url, sheet = "TD Holdings", range = "A5:G1000")
-  
-  # Clean and process the data
-  portfolio <- raw_data |>
-    # Remove completely empty rows
-    filter(if_any(everything(), ~ !is.na(.))) |>
-    # Convert Date column to proper date format
-    mutate(Date = as.Date(Date)) |>
-    # Filter for the most recent date
-    filter(Date == max(Date, na.rm = TRUE)) |>
-    # Clean and standardize symbol names
-    mutate(
-      Symbol = str_trim(str_to_upper(Symbol)),
-      Quantity = as.numeric(Quantity),
-      Account = str_trim(Account)
-    ) |>
-    # Remove rows with missing symbols or zero quantity
-    filter(!is.na(Symbol), !is.na(Quantity), Quantity > 0, Symbol != "") |>
-    # Group by symbol and sum quantities across accounts
+
+  # Add additional sources in this list using the same file URL.
+  # Example: list(name = "My Other Holdings", range = "A5:E1000")
+  holdings_sources <- list(
+    list(name = "TD Holdings", range = "A5:G1000")
+  )
+  clean_env_value <- function(x) {
+    value <- trimws(x)
+    gsub("^['\"]|['\"]$", "", value)
+  }
+
+  extra_sheet_name <- clean_env_value(Sys.getenv("EXTRA_HOLDINGS_SHEET_NAME"))
+  extra_sheet_range <- clean_env_value(Sys.getenv("EXTRA_HOLDINGS_SHEET_RANGE"))
+  if (nzchar(extra_sheet_name) && nzchar(extra_sheet_range)) {
+    holdings_sources[[length(holdings_sources) + 1]] <- list(
+      name = extra_sheet_name,
+      range = extra_sheet_range
+    )
+  }
+  cat("Configured holdings sources:", length(holdings_sources), "\n")
+  for (cfg in holdings_sources) {
+    cat("  *", cfg$name, "|", cfg$range, "\n")
+  }
+
+  find_column_name <- function(data, candidates) {
+    normalized_names <- gsub("[^a-z0-9]+", "", tolower(names(data)))
+    for (candidate in candidates) {
+      idx <- which(normalized_names == candidate)
+      if (length(idx) > 0) return(names(data)[idx[1]])
+    }
+    return(NA_character_)
+  }
+
+  parse_sheet_holdings <- function(raw_data, source_name) {
+    required_map <- c(
+      Date = "date",
+      Account = "account",
+      Symbol = "symbol",
+      Quantity = "quantity"
+    )
+    optional_map <- c(
+      Average_Cost = "averagecost"
+    )
+
+    selected_names <- c(
+      sapply(required_map, function(x) find_column_name(raw_data, x)),
+      sapply(optional_map, function(x) find_column_name(raw_data, x))
+    )
+
+    missing_required <- names(required_map)[is.na(selected_names[names(required_map)])]
+    if (length(missing_required) > 0) {
+      stop(
+        paste0(
+          "Sheet '", source_name, "' is missing required column(s): ",
+          paste(missing_required, collapse = ", ")
+        )
+      )
+    }
+
+    selected_existing <- selected_names[!is.na(selected_names)]
+    rename_map <- stats::setNames(unname(selected_existing), names(selected_existing))
+
+    cat("    Rows read from", source_name, ":", nrow(raw_data), "\n")
+
+    cleaned <- raw_data |>
+      select(any_of(unname(selected_existing))) |>
+      rename(!!!rename_map)
+
+    if (!"Average_Cost" %in% names(cleaned)) {
+      cleaned$Average_Cost <- NA_real_
+    }
+
+    cleaned <- cleaned |>
+      filter(if_any(everything(), ~ !is.na(.))) |>
+      mutate(
+        Date = as.Date(Date),
+        Symbol = str_trim(str_to_upper(as.character(Symbol))),
+        Account = str_trim(as.character(Account)),
+        Quantity = as.numeric(Quantity),
+        Average_Cost = as.numeric(Average_Cost)
+      ) |>
+      filter(!is.na(Date), !is.na(Symbol), Symbol != "", !is.na(Quantity), Quantity > 0)
+
+    if (nrow(cleaned) == 0) {
+      cat("    Rows retained after cleaning", source_name, ": 0\n")
+      return(cleaned)
+    }
+
+    # Keep the most recent snapshot for each source sheet.
+    latest_date <- max(cleaned$Date, na.rm = TRUE)
+    filtered <- cleaned |>
+      filter(Date == latest_date)
+
+    cat(
+      "    Latest date in", source_name, ":", format(latest_date, "%Y-%m-%d"),
+      "| Rows retained:", nrow(filtered), "\n"
+    )
+
+    filtered
+  }
+
+  parsed_sources <- list()
+  for (i in seq_along(holdings_sources)) {
+    source_cfg <- holdings_sources[[i]]
+    cat("  - Reading", source_cfg$name, "(", source_cfg$range, ")\n")
+    raw_data <- read_sheet(
+      sheet_url,
+      sheet = source_cfg$name,
+      range = source_cfg$range,
+      col_types = "c"
+    )
+    parsed_sources[[i]] <- parse_sheet_holdings(raw_data, source_cfg$name)
+  }
+
+  combined_holdings <- bind_rows(parsed_sources)
+  if (nrow(combined_holdings) == 0) {
+    stop("No valid holdings rows found across configured sheet sources")
+  }
+  cat("Combined holdings rows across sources:", nrow(combined_holdings), "\n")
+
+  portfolio <- combined_holdings |>
     group_by(Symbol) |>
     summarise(
       Total_Quantity = sum(Quantity, na.rm = TRUE),
-      Accounts = paste(unique(Account), collapse = ", "),
-      Date = first(Date),
-      Market = first(Market),
-      Description = first(Description),
+      Accounts = paste(sort(unique(Account)), collapse = ", "),
+      Date = max(Date, na.rm = TRUE),
+      Average_Cost = ifelse(
+        sum(ifelse(is.na(Average_Cost), 0, Quantity), na.rm = TRUE) > 0,
+        sum(Quantity * Average_Cost, na.rm = TRUE) /
+          sum(ifelse(is.na(Average_Cost), 0, Quantity), na.rm = TRUE),
+        NA_real_
+      ),
       .groups = "drop"
     ) |>
+    mutate(Average_Cost = round(Average_Cost, 4)) |>
     arrange(Symbol)
   
   cat("✓ Portfolio data loaded successfully!\n")
