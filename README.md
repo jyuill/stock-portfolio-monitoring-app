@@ -29,19 +29,24 @@ A Shiny application for monitoring stock portfolio performance with data sourced
 
 1. **Service Account Credentials**:
    - You need a Google service account JSON credentials file
-   - Place this file at: `creds/<credential file>.json`
-   - The service account email must have access to your Google Sheet
+   - see **/creds/README.md** for details
+   - NOTE: The service account email must have access to your Google Sheet
 
 2. **Sheet Structure**:
+   - see **/creds/README.md** for details
+   - example:
    - **Sheet URL**: `https://docs.google.com/spreadsheets/d/<file id>>`
    - **Sheet Name**: `TD Holdings`
    - **Required Columns**:
      - `Date`: Date of the data (app automatically uses most recent)
+     - `Account`: Account identifier (for aggregation across accounts)
      - `Symbol`: Stock ticker symbols
      - `Quantity`: Number of shares held
-     - `Account`: Account identifier (for aggregation across accounts)
+     - `Average Price`: Cost base for each asset
 
 ## Installation & Setup
+
+Not sure if all of this still applies, since changes have been made to the app.
 
 1. **Clone or download** the app files to your working directory
 

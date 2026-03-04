@@ -16,10 +16,38 @@ library(tidyr)
 
 cat("=== Loading Stock Portfolio Data ===\n")
 
+auth_google_sheets <- function() {
+  # Preferred for deployment: store full JSON key contents in env var.
+  sa_json <- trimws(Sys.getenv("GS4_SERVICE_ACCOUNT_JSON", ""))
+  # Local fallback path for development.
+  sa_path <- trimws(Sys.getenv(
+    "GS4_SERVICE_ACCOUNT_PATH",
+    "creds/original-return-107905-3b03bf4c17bf.json"
+  ))
+
+  if (nzchar(sa_json)) {
+    temp_auth_file <- tempfile(fileext = ".json")
+    writeLines(sa_json, temp_auth_file, useBytes = TRUE)
+    on.exit(unlink(temp_auth_file), add = TRUE)
+    gs4_auth(path = temp_auth_file)
+    return(invisible(TRUE))
+  }
+
+  if (file.exists(sa_path)) {
+    gs4_auth(path = sa_path)
+    return(invisible(TRUE))
+  }
+
+  stop(
+    "Google Sheets credentials not found. Set GS4_SERVICE_ACCOUNT_JSON ",
+    "or provide a credentials file at GS4_SERVICE_ACCOUNT_PATH."
+  )
+}
+
 # Initialize Google Sheets authentication
 cat("Authenticating with Google Sheets...\n")
 tryCatch({
-  gs4_auth(path = "creds/original-return-107905-3b03bf4c17bf.json")
+  auth_google_sheets()
   cat("✓ Google Sheets authentication successful!\n")
 }, error = function(e) {
   cat("✗ Authentication failed:", e$message, "\n")
@@ -31,10 +59,10 @@ cat("Loading portfolio data from Google Sheets...\n")
 portfolio_data <- tryCatch({
   sheet_url <- "https://docs.google.com/spreadsheets/d/1oievySvQ3m2ojs1On27EKpZ4rqrbd0Ksi_rnQf8YMyY/edit?usp=sharing"
 
-  # Add additional sources in this list using the same file URL.
-  # Example: list(name = "My Other Holdings", range = "A5:E1000")
+  # Default holdings sources (hard-coded, non-sensitive config).
   holdings_sources <- list(
-    list(name = "TD Holdings", range = "A5:G1000")
+    list(name = "TD Holdings", range = "A5:G1000"),
+    list(name = "Quest Holdings", range = "A5:J1000")
   )
   clean_env_value <- function(x) {
     value <- trimws(x)
@@ -44,9 +72,12 @@ portfolio_data <- tryCatch({
   extra_sheet_name <- clean_env_value(Sys.getenv("EXTRA_HOLDINGS_SHEET_NAME"))
   extra_sheet_range <- clean_env_value(Sys.getenv("EXTRA_HOLDINGS_SHEET_RANGE"))
   if (nzchar(extra_sheet_name) && nzchar(extra_sheet_range)) {
-    holdings_sources[[length(holdings_sources) + 1]] <- list(
-      name = extra_sheet_name,
-      range = extra_sheet_range
+    # Env vars override the default extra sheet config.
+    holdings_sources[[2]] <- list(name = extra_sheet_name, range = extra_sheet_range)
+  } else if (xor(nzchar(extra_sheet_name), nzchar(extra_sheet_range))) {
+    warning(
+      "Only one of EXTRA_HOLDINGS_SHEET_NAME / EXTRA_HOLDINGS_SHEET_RANGE is set. ",
+      "Using hard-coded default extra sheet."
     )
   }
   cat("Configured holdings sources:", length(holdings_sources), "\n")
