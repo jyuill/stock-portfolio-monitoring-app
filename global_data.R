@@ -31,8 +31,8 @@ cat("Loading portfolio data from Google Sheets...\n")
 portfolio_data <- tryCatch({
   sheet_url <- "https://docs.google.com/spreadsheets/d/1oievySvQ3m2ojs1On27EKpZ4rqrbd0Ksi_rnQf8YMyY/edit?usp=sharing"
   
-  # Read the TD Holdings sheet starting from A3
-  raw_data <- read_sheet(sheet_url, sheet = "TD Holdings", range = "A3:G1000")
+  # Read the TD Holdings sheet starting from A5
+  raw_data <- read_sheet(sheet_url, sheet = "TD Holdings", range = "A5:G1000")
   
   # Clean and process the data
   portfolio <- raw_data |>

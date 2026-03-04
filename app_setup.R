@@ -1,5 +1,7 @@
 # Stock Portfolio Monitoring App Setup
 # This script helps set up the environment and launch the Shiny app
+# NOT EXPLICITLY USED IN THE APP (as of Mar 2026)
+# - keeping for reference
 
 # Load required libraries
 required_packages <- c(
@@ -72,8 +74,8 @@ test_sheets_connection <- function() {
     # Test reading the sheet starting from A3
     sheet_url <- "https://docs.google.com/spreadsheets/d/1oievySvQ3m2ojs1On27EKpZ4rqrbd0Ksi_rnQf8YMyY/edit?usp=sharing"
     
-    cat("Testing connection to TD Holdings sheet (starting from A3)...\n")
-    test_data <- read_sheet(sheet_url, sheet = "TD Holdings", range = "A3:G1000", col_names = TRUE)
+    cat("Testing connection to TD Holdings sheet (starting from A5)...\n")
+    test_data <- read_sheet(sheet_url, sheet = "TD Holdings", range = "A5:G1000", col_names = TRUE)
     
     cat("✓ Successfully connected to Google Sheet\n")
     cat("✓ Sample data preview (first few rows from A3):\n")
