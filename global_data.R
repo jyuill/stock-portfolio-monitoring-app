@@ -292,11 +292,10 @@ portfolio_data <- tryCatch({
   }
   cat("Combined holdings rows across sources:", nrow(combined_holdings), "\n")
 
-  portfolio <- combined_holdings |>
-    group_by(Symbol) |>
+  portfolio_positions <- combined_holdings |>
+    group_by(Symbol, Account) |>
     summarise(
-      Total_Quantity = sum(Quantity, na.rm = TRUE),
-      Accounts = paste(sort(unique(Account)), collapse = ", "),
+      Quantity = sum(Quantity, na.rm = TRUE),
       Date = max(Date, na.rm = TRUE),
       Average_Cost = ifelse(
         sum(ifelse(is.na(Average_Cost), 0, Quantity), na.rm = TRUE) > 0,
@@ -309,13 +308,33 @@ portfolio_data <- tryCatch({
     left_join(holdings_meta, by = c("Symbol" = "Source_Symbol")) |>
     mutate(
       Yahoo_Symbol = coalesce(Yahoo_Symbol, Symbol),
-      Sector = ifelse(is.na(Sector) | Sector == "", "Unclassified", Sector)
+      Sector = ifelse(is.na(Sector) | Sector == "", "Unclassified", Sector),
+      Average_Cost = round(Average_Cost, 4)
+    ) |>
+    arrange(Symbol, Account)
+
+  portfolio <- portfolio_positions |>
+    group_by(Symbol) |>
+    summarise(
+      Total_Quantity = sum(Quantity, na.rm = TRUE),
+      Accounts = paste(sort(unique(Account)), collapse = ", "),
+      Date = max(Date, na.rm = TRUE),
+      Average_Cost = ifelse(
+        sum(ifelse(is.na(Average_Cost), 0, Quantity), na.rm = TRUE) > 0,
+        sum(Quantity * Average_Cost, na.rm = TRUE) /
+          sum(ifelse(is.na(Average_Cost), 0, Quantity), na.rm = TRUE),
+        NA_real_
+      ),
+      Yahoo_Symbol = first(Yahoo_Symbol),
+      Sector = first(Sector),
+      .groups = "drop"
     ) |>
     mutate(Average_Cost = round(Average_Cost, 4)) |>
     arrange(Symbol)
   
   cat("✓ Portfolio data loaded successfully!\n")
   cat("  - Unique assets:", nrow(portfolio), "\n")
+  cat("  - Account positions:", nrow(portfolio_positions), "\n")
   cat("  - Data from:", format(first(portfolio$Date), "%Y-%m-%d"), "\n")
   cat("  - Symbols:", paste(head(portfolio$Symbol, 10), collapse = ", "), 
       if(nrow(portfolio) > 10) "..." else "", "\n")

@@ -55,21 +55,42 @@ ui <- dashboardPage(
       # Portfolio Overview Tab
       tabItem(tabName = "overview",
         fluidRow(
-          box(
-            title = "Portfolio Status", status = "primary", solidHeader = TRUE,
-            width = 12,
-            textOutput("portfolio_summary"),
-            br(),
-            actionButton("refresh_data", "Refresh Data", 
-                        class = "btn-primary", icon = icon("sync"))
-          )
+          valueBoxOutput("overview_total_investment", width = 4),
+          valueBoxOutput("overview_total_value", width = 4),
+          valueBoxOutput("overview_total_gain_loss", width = 4)
         ),
         
         fluidRow(
           box(
-            title = "Performance Heatmap", status = "success", solidHeader = TRUE,
+            title = "Portfolio Value by Account", status = "primary", solidHeader = TRUE,
+            width = 6,
+            plotlyOutput("account_value_donut", height = "320px")
+          ),
+          box(
+            title = "Portfolio Value by Sector", status = "success", solidHeader = TRUE,
+            width = 6,
+            plotlyOutput("sector_value_donut", height = "320px")
+          )
+        ),
+
+        fluidRow(
+          box(
+            title = "Account Value vs Gain/Loss", status = "warning", solidHeader = TRUE,
             width = 12,
-            plotlyOutput("performance_heatmap", height = "600px")
+            plotlyOutput("account_value_gain_bar", height = "320px")
+          )
+        ),
+
+        fluidRow(
+          box(
+            title = "Account Breakdown", status = "info", solidHeader = TRUE,
+            width = 6,
+            DTOutput("account_breakdown_table")
+          ),
+          box(
+            title = "Sector Breakdown", status = "info", solidHeader = TRUE,
+            width = 6,
+            DTOutput("sector_breakdown_table")
           )
         )
       ),

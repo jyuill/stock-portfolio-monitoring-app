@@ -17,9 +17,8 @@ server <- function(input, output, session) {
     sector_choices <- c("All", sort(unique(portfolio_data$Sector)))
     updateSelectInput(session, "sector_filter", choices = sector_choices, selected = "All")
 
-    account_choices <- strsplit(portfolio_data$Accounts, ",\\s*")
-    account_choices <- trimws(unlist(account_choices))
-    account_choices <- sort(unique(account_choices[!is.na(account_choices) & account_choices != ""]))
+    account_choices <- sort(unique(portfolio_positions$Account))
+    account_choices <- account_choices[!is.na(account_choices) & account_choices != ""]
     updateSelectInput(session, "account_filter", choices = c("All", account_choices), selected = "All")
   })
   
@@ -88,6 +87,253 @@ server <- function(input, output, session) {
     }
     
     return(perf_data)
+  })
+
+  filtered_positions <- reactive({
+    positions <- portfolio_positions
+
+    if (!is.null(input$symbol_filter) && input$symbol_filter != "") {
+      symbols_to_show <- str_split(str_to_upper(input$symbol_filter), "[,\\s]+")[[1]]
+      symbols_to_show <- str_trim(symbols_to_show)
+      symbols_to_show <- symbols_to_show[symbols_to_show != ""]
+      if (length(symbols_to_show) > 0) {
+        positions <- positions |>
+          filter(Symbol %in% symbols_to_show)
+      }
+    }
+
+    if (!is.null(input$sector_filter) && input$sector_filter != "All") {
+      positions <- positions |>
+        filter(Sector == input$sector_filter)
+    }
+
+    if (!is.null(input$account_filter) && input$account_filter != "All") {
+      positions <- positions |>
+        filter(Account == input$account_filter)
+    }
+
+    positions
+  })
+
+  overview_symbol_data <- reactive({
+    positions <- filtered_positions()
+    if (nrow(positions) == 0) {
+      return(data.frame())
+    }
+
+    current_prices <- filtered_performance() |>
+      select(Symbol, Current_Price)
+
+    positions |>
+      group_by(Symbol, Sector) |>
+      summarise(
+        Quantity = sum(Quantity, na.rm = TRUE),
+        Average_Cost = ifelse(
+          sum(ifelse(is.na(Average_Cost), 0, Quantity), na.rm = TRUE) > 0,
+          sum(Quantity * Average_Cost, na.rm = TRUE) /
+            sum(ifelse(is.na(Average_Cost), 0, Quantity), na.rm = TRUE),
+          NA_real_
+        ),
+        Accounts = paste(sort(unique(Account)), collapse = ", "),
+        .groups = "drop"
+      ) |>
+      left_join(current_prices, by = "Symbol") |>
+      mutate(
+        Value = Current_Price * Quantity,
+        Investment = Average_Cost * Quantity,
+        Gain_Loss = Value - Investment
+      )
+  })
+
+  account_breakdown <- reactive({
+    positions <- filtered_positions()
+    if (nrow(positions) == 0) {
+      return(data.frame())
+    }
+
+    current_prices <- filtered_performance() |>
+      select(Symbol, Current_Price)
+
+    output <- positions |>
+      left_join(current_prices, by = "Symbol") |>
+      mutate(
+        Value = Current_Price * Quantity,
+        Investment = Average_Cost * Quantity,
+        Gain_Loss = Value - Investment
+      ) |>
+      group_by(Account) |>
+      summarise(
+        Value = sum(Value, na.rm = TRUE),
+        Investment = sum(Investment, na.rm = TRUE),
+        Gain_Loss = sum(Gain_Loss, na.rm = TRUE),
+        .groups = "drop"
+      ) |>
+      arrange(desc(Value))
+
+    total_value <- sum(output$Value, na.rm = TRUE)
+    total_rows <- nrow(output)
+    output |>
+      mutate(
+        PortfolioPct = if (total_value > 0) {
+          Value / total_value
+        } else {
+          rep(NA_real_, total_rows)
+        },
+        Gain_Loss_Pct = ifelse(Investment != 0, Gain_Loss / Investment, NA_real_)
+      )
+  })
+
+  sector_breakdown <- reactive({
+    symbol_data <- overview_symbol_data()
+    if (nrow(symbol_data) == 0) {
+      return(data.frame())
+    }
+
+    output <- symbol_data |>
+      group_by(Sector) |>
+      summarise(
+        Value = sum(Value, na.rm = TRUE),
+        Investment = sum(Investment, na.rm = TRUE),
+        Gain_Loss = sum(Gain_Loss, na.rm = TRUE),
+        .groups = "drop"
+      ) |>
+      arrange(desc(Value))
+
+    total_value <- sum(output$Value, na.rm = TRUE)
+    total_rows <- nrow(output)
+    output |>
+      mutate(
+        PortfolioPct = if (total_value > 0) {
+          Value / total_value
+        } else {
+          rep(NA_real_, total_rows)
+        },
+        Gain_Loss_Pct = ifelse(Investment != 0, Gain_Loss / Investment, NA_real_)
+      )
+  })
+
+  fmt_currency <- function(x, digits = 0) {
+    if (is.na(x)) return("N/A")
+    paste0("$", format(round(x, digits), big.mark = ",", scientific = FALSE, trim = TRUE, nsmall = digits))
+  }
+
+  output$overview_total_investment <- renderValueBox({
+    data <- overview_symbol_data()
+    total_investment <- sum(data$Investment, na.rm = TRUE)
+    valueBox(
+      value = fmt_currency(total_investment, 0),
+      subtitle = "Total Investment",
+      icon = icon("wallet"),
+      color = "light-blue"
+    )
+  })
+
+  output$overview_total_value <- renderValueBox({
+    data <- overview_symbol_data()
+    total_value <- sum(data$Value, na.rm = TRUE)
+    valueBox(
+      value = fmt_currency(total_value, 0),
+      subtitle = "Current Portfolio Value",
+      icon = icon("chart-pie"),
+      color = "aqua"
+    )
+  })
+
+  output$overview_total_gain_loss <- renderValueBox({
+    data <- overview_symbol_data()
+    total_investment <- sum(data$Investment, na.rm = TRUE)
+    total_gain_loss <- sum(data$Gain_Loss, na.rm = TRUE)
+    total_gain_loss_pct <- ifelse(total_investment > 0, total_gain_loss / total_investment, NA_real_)
+    gain_loss_label <- paste0(
+      fmt_currency(total_gain_loss, 0),
+      " (",
+      ifelse(is.na(total_gain_loss_pct), "N/A", paste0(round(total_gain_loss_pct * 100, 1), "%")),
+      ")"
+    )
+
+    valueBox(
+      value = gain_loss_label,
+      subtitle = "Total Gain / Loss",
+      icon = icon("balance-scale"),
+      color = ifelse(total_gain_loss >= 0, "green", "red")
+    )
+  })
+
+  output$account_value_donut <- renderPlotly({
+    data <- account_breakdown()
+    req(nrow(data) > 0)
+
+    plot_ly(
+      data,
+      labels = ~Account,
+      values = ~Value,
+      type = "pie",
+      hole = 0.55,
+      textinfo = "label+percent",
+      hovertemplate = "%{label}<br>Value: $%{value:,.0f}<br>Share: %{percent}<extra></extra>"
+    ) |>
+      layout(showlegend = FALSE)
+  })
+
+  output$sector_value_donut <- renderPlotly({
+    data <- sector_breakdown()
+    req(nrow(data) > 0)
+
+    plot_ly(
+      data,
+      labels = ~Sector,
+      values = ~Value,
+      type = "pie",
+      hole = 0.55,
+      textinfo = "label+percent",
+      hovertemplate = "%{label}<br>Value: $%{value:,.0f}<br>Share: %{percent}<extra></extra>"
+    ) |>
+      layout(showlegend = FALSE)
+  })
+
+  output$account_breakdown_table <- renderDT({
+    data <- account_breakdown()
+    req(nrow(data) > 0)
+    data <- data |>
+      select(Account, Value, PortfolioPct, Investment, Gain_Loss, Gain_Loss_Pct)
+
+    datatable(
+      data,
+      options = list(pageLength = 10, searching = FALSE, paging = FALSE, info = FALSE, scrollX = TRUE),
+      rownames = FALSE
+    ) |>
+      formatCurrency(columns = c("Investment", "Value", "Gain_Loss"), currency = "$", digits = 0) |>
+      formatPercentage(columns = c("PortfolioPct", "Gain_Loss_Pct"), digits = 1)
+  })
+
+  output$sector_breakdown_table <- renderDT({
+    data <- sector_breakdown()
+    req(nrow(data) > 0)
+    data <- data |>
+      select(Sector, Value, PortfolioPct, Investment, Gain_Loss, Gain_Loss_Pct)
+
+    datatable(
+      data,
+      options = list(pageLength = 10, searching = FALSE, paging = FALSE, info = FALSE, scrollX = TRUE),
+      rownames = FALSE
+    ) |>
+      formatCurrency(columns = c("Value", "Investment", "Gain_Loss"), currency = "$", digits = 0) |>
+      formatPercentage(columns = c("PortfolioPct", "Gain_Loss_Pct"), digits = 1)
+  })
+
+  output$account_value_gain_bar <- renderPlotly({
+    data <- account_breakdown() |>
+      arrange(Value)
+    req(nrow(data) > 0)
+
+    plot_ly(data, x = ~Account, y = ~Value, type = "bar", name = "Value", marker = list(color = "#2ca25f")) |>
+      add_trace(y = ~Gain_Loss, type = "bar", name = "Gain/Loss", marker = list(color = "#3182bd")) |>
+      layout(
+        barmode = "group",
+        yaxis = list(title = "Amount ($)"),
+        xaxis = list(title = "Account"),
+        legend = list(orientation = "h", y = -0.2)
+      )
   })
   
   # Create performance heatmap
