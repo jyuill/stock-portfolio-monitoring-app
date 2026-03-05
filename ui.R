@@ -55,8 +55,8 @@ ui <- dashboardPage(
       # Portfolio Overview Tab
       tabItem(tabName = "overview",
         fluidRow(
-          valueBoxOutput("overview_total_investment", width = 4),
           valueBoxOutput("overview_total_value", width = 4),
+          valueBoxOutput("overview_total_investment", width = 4),
           valueBoxOutput("overview_total_gain_loss", width = 4)
         ),
         

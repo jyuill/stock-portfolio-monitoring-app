@@ -323,15 +323,20 @@ server <- function(input, output, session) {
 
   output$account_value_gain_bar <- renderPlotly({
     data <- account_breakdown() |>
-      arrange(Value)
+      arrange(desc(Value))
     req(nrow(data) > 0)
+    data$Account <- factor(data$Account, levels = data$Account)
 
     plot_ly(data, x = ~Account, y = ~Value, type = "bar", name = "Value", marker = list(color = "#2ca25f")) |>
       add_trace(y = ~Gain_Loss, type = "bar", name = "Gain/Loss", marker = list(color = "#3182bd")) |>
       layout(
         barmode = "group",
         yaxis = list(title = "Amount ($)"),
-        xaxis = list(title = "Account"),
+        xaxis = list(
+          title = "Account",
+          categoryorder = "array",
+          categoryarray = as.character(data$Account)
+        ),
         legend = list(orientation = "h", y = -0.2)
       )
   })
