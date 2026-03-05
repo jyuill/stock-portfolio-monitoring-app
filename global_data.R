@@ -94,7 +94,102 @@ portfolio_data <- tryCatch({
     return(NA_character_)
   }
 
+  load_holdings_meta <- function() {
+    meta_cfg <- list(name = "Holdings meta", range = "B8:D100")
+    cat("Loading holdings metadata from", meta_cfg$name, "(", meta_cfg$range, ")\n")
+
+    raw_meta <- read_sheet(
+      sheet_url,
+      sheet = meta_cfg$name,
+      range = meta_cfg$range,
+      col_types = "c"
+    )
+
+    if (nrow(raw_meta) == 0) {
+      cat("  - Holdings meta is empty\n")
+      return(data.frame(
+        Source_Symbol = character(),
+        Yahoo_Symbol = character(),
+        Sector = character(),
+        stringsAsFactors = FALSE
+      ))
+    }
+
+    source_col <- find_column_name(raw_meta, "sourcesymbol")
+    yahoo_col <- find_column_name(raw_meta, "yahoosymbol")
+    sector_col <- find_column_name(raw_meta, "sector")
+
+    if (is.na(source_col)) {
+      stop("Holdings meta sheet is missing required column: source_symbol")
+    }
+
+    selected_cols <- c(source_col, yahoo_col, sector_col)
+    selected_cols <- selected_cols[!is.na(selected_cols)]
+    rename_map <- c(Source_Symbol = source_col)
+    if (!is.na(yahoo_col)) rename_map <- c(rename_map, Yahoo_Symbol = yahoo_col)
+    if (!is.na(sector_col)) rename_map <- c(rename_map, Sector = sector_col)
+
+    meta <- raw_meta |>
+      select(any_of(selected_cols)) |>
+      rename(!!!rename_map)
+
+    if (!"Yahoo_Symbol" %in% names(meta)) {
+      meta$Yahoo_Symbol <- NA_character_
+    }
+    if (!"Sector" %in% names(meta)) {
+      meta$Sector <- NA_character_
+    }
+
+    meta <- meta |>
+      mutate(
+        Source_Symbol = str_trim(str_to_upper(as.character(Source_Symbol))),
+        Yahoo_Symbol = str_trim(str_to_upper(as.character(Yahoo_Symbol))),
+        Sector = str_trim(as.character(Sector))
+      ) |>
+      filter(!is.na(Source_Symbol), Source_Symbol != "") |>
+      mutate(
+        Yahoo_Symbol = ifelse(Yahoo_Symbol == "", NA_character_, Yahoo_Symbol),
+        Sector = ifelse(Sector == "", NA_character_, Sector)
+      ) |>
+      group_by(Source_Symbol) |>
+      summarise(
+        Yahoo_Symbol = {
+          vals <- na.omit(Yahoo_Symbol)
+          if (length(vals) > 0) vals[1] else NA_character_
+        },
+        Sector = {
+          vals <- na.omit(Sector)
+          if (length(vals) > 0) vals[1] else NA_character_
+        },
+        .groups = "drop"
+      )
+
+    cat(
+      "  - Holdings meta rows:", nrow(meta),
+      "| Symbol overrides:", sum(!is.na(meta$Yahoo_Symbol) & meta$Yahoo_Symbol != meta$Source_Symbol), "\n"
+    )
+
+    meta
+  }
+
+  holdings_meta <- load_holdings_meta()
+
   parse_sheet_holdings <- function(raw_data, source_name) {
+    parse_numeric_value <- function(x) {
+      x_chr <- as.character(x)
+      is_paren_negative <- grepl("^\\s*\\(.*\\)\\s*$", x_chr)
+
+      cleaned <- x_chr
+      cleaned <- gsub(",", "", cleaned)
+      cleaned <- gsub("[()]", "", cleaned)
+      cleaned <- gsub("[^0-9.\\-]", "", cleaned)
+      cleaned[cleaned == ""] <- NA_character_
+
+      out <- suppressWarnings(as.numeric(cleaned))
+      out[is_paren_negative & !is.na(out)] <- -out[is_paren_negative & !is.na(out)]
+      out
+    }
+
     required_map <- c(
       Date = "date",
       Account = "account",
@@ -139,8 +234,8 @@ portfolio_data <- tryCatch({
         Date = as.Date(Date),
         Symbol = str_trim(str_to_upper(as.character(Symbol))),
         Account = str_trim(as.character(Account)),
-        Quantity = as.numeric(Quantity),
-        Average_Cost = as.numeric(Average_Cost)
+        Quantity = parse_numeric_value(Quantity),
+        Average_Cost = parse_numeric_value(Average_Cost)
       ) |>
       filter(!is.na(Date), !is.na(Symbol), Symbol != "", !is.na(Quantity), Quantity > 0)
 
@@ -156,13 +251,15 @@ portfolio_data <- tryCatch({
 
     cat(
       "    Latest date in", source_name, ":", format(latest_date, "%Y-%m-%d"),
-      "| Rows retained:", nrow(filtered), "\n"
+      "| Rows retained:", nrow(filtered),
+      "| Rows with Average_Cost:", sum(!is.na(filtered$Average_Cost)), "\n"
     )
 
     filtered
   }
 
   parsed_sources <- list()
+  source_summaries <- list()
   for (i in seq_along(holdings_sources)) {
     source_cfg <- holdings_sources[[i]]
     cat("  - Reading", source_cfg$name, "(", source_cfg$range, ")\n")
@@ -172,8 +269,22 @@ portfolio_data <- tryCatch({
       range = source_cfg$range,
       col_types = "c"
     )
-    parsed_sources[[i]] <- parse_sheet_holdings(raw_data, source_cfg$name)
+    parsed_source <- parse_sheet_holdings(raw_data, source_cfg$name)
+    parsed_sources[[i]] <- parsed_source
+    source_summaries[[i]] <- data.frame(
+      Source = source_cfg$name,
+      Range = source_cfg$range,
+      Rows_Read = nrow(raw_data),
+      Rows_Latest = nrow(parsed_source),
+      Latest_Date = if (nrow(parsed_source) > 0) max(parsed_source$Date, na.rm = TRUE) else as.Date(NA),
+      Missing_Average_Cost = sum(is.na(parsed_source$Average_Cost)),
+      stringsAsFactors = FALSE
+    )
   }
+
+  holdings_source_summary <- bind_rows(source_summaries)
+  cat("Source validation summary:\n")
+  print(holdings_source_summary)
 
   combined_holdings <- bind_rows(parsed_sources)
   if (nrow(combined_holdings) == 0) {
@@ -195,6 +306,11 @@ portfolio_data <- tryCatch({
       ),
       .groups = "drop"
     ) |>
+    left_join(holdings_meta, by = c("Symbol" = "Source_Symbol")) |>
+    mutate(
+      Yahoo_Symbol = coalesce(Yahoo_Symbol, Symbol),
+      Sector = ifelse(is.na(Sector) | Sector == "", "Unclassified", Sector)
+    ) |>
     mutate(Average_Cost = round(Average_Cost, 4)) |>
     arrange(Symbol)
   
@@ -214,27 +330,101 @@ portfolio_data <- tryCatch({
 # Fetch price data for all symbols
 cat("\nFetching price data from Yahoo Finance...\n")
 price_data <- tryCatch({
-  symbols <- portfolio_data$Symbol
+  symbol_map <- portfolio_data |>
+    select(Symbol, Yahoo_Symbol, Average_Cost)
+
+  parse_quote_numeric <- function(x) {
+    x_chr <- as.character(x)
+    x_chr <- gsub(",", "", x_chr)
+    x_chr <- gsub("[()]", "", x_chr)
+    x_chr <- gsub("[^0-9.\\-]", "", x_chr)
+    suppressWarnings(as.numeric(x_chr))
+  }
+
+  mutual_fund_fallback_tickers <- list(
+    TDB905 = c("TDB905.CF", "TDB905.TO", "TDB905"),
+    TDB3085 = c("TDB3085.CF", "TDB3085.TO", "TDB3085")
+  )
+
+  fetch_mutual_fund_fallback <- function(source_symbol, avg_cost) {
+    candidate_tickers <- mutual_fund_fallback_tickers[[source_symbol]]
+    if (is.null(candidate_tickers)) {
+      return(NULL)
+    }
+
+    for (ticker in candidate_tickers) {
+      quote_data <- tryCatch(
+        getQuote(ticker, src = "yahoo"),
+        error = function(e) NULL
+      )
+      if (is.null(quote_data) || nrow(quote_data) == 0) next
+
+      numeric_candidates <- suppressWarnings(unlist(lapply(quote_data[1, ], parse_quote_numeric)))
+      numeric_candidates <- numeric_candidates[!is.na(numeric_candidates) & numeric_candidates > 0]
+      if (length(numeric_candidates) == 0) next
+
+      price_val <- numeric_candidates[1]
+      cat("  Fallback quote success for", source_symbol, "using", ticker, "at", round(price_val, 4), "\n")
+      return(data.frame(
+        Date = Sys.Date(),
+        Price = as.numeric(price_val),
+        Symbol = source_symbol
+      ))
+    }
+
+    if (!is.na(avg_cost) && avg_cost > 0) {
+      cat("  Fallback to Average_Cost for", source_symbol, "at", round(avg_cost, 4), "\n")
+      return(data.frame(
+        Date = Sys.Date(),
+        Price = as.numeric(avg_cost),
+        Symbol = source_symbol
+      ))
+    }
+
+    NULL
+  }
+
+  build_symbol_variants <- function(source_symbol, yahoo_symbol) {
+    seeds <- unique(c(yahoo_symbol, source_symbol))
+    variants <- c()
+    for (seed in seeds) {
+      seed <- str_trim(str_to_upper(as.character(seed)))
+      if (!nzchar(seed)) next
+      dash_seed <- gsub("\\.", "-", seed)
+      variants <- c(
+        variants,
+        seed,
+        paste0(seed, ".TO"),
+        paste0(seed, ".TSE"),
+        dash_seed,
+        paste0(dash_seed, ".TO"),
+        paste0(dash_seed, ".TSE")
+      )
+    }
+    unique(variants)
+  }
   
   # Calculate date ranges
   end_date <- Sys.Date()
   start_date <- end_date - years(2) # Get 2 years of data
   
   price_list <- list()
-  total_symbols <- length(symbols)
+  total_symbols <- nrow(symbol_map)
   successful_symbols <- 0
   
   cat("Fetching data for", total_symbols, "symbols...\n")
   
-  for (i in seq_along(symbols)) {
-    symbol <- symbols[i]
+  for (i in seq_len(total_symbols)) {
+    source_symbol <- symbol_map$Symbol[i]
+    yahoo_symbol <- symbol_map$Yahoo_Symbol[i]
+    average_cost <- symbol_map$Average_Cost[i]
     
     if (i %% 5 == 0 || i == total_symbols) {
       cat("  Progress:", i, "/", total_symbols, "symbols processed\n")
     }
     
     # Try different symbol formats if needed
-    symbol_variants <- c(symbol, paste0(symbol, ".TO"), paste0(symbol, ".TSE"))
+    symbol_variants <- build_symbol_variants(source_symbol, yahoo_symbol)
     
     success <- FALSE
     for (variant in symbol_variants) {
@@ -257,13 +447,13 @@ price_data <- tryCatch({
             prices <- data.frame(
               Date = index(price_data_raw),
               Price = as.numeric(price_data_raw[, adj_close_col]),
-              Symbol = symbol
+              Symbol = source_symbol
             ) |>
               filter(!is.na(Price)) |>
               arrange(Date)
             
             if (nrow(prices) > 0) {
-              price_list[[symbol]] <- prices
+              price_list[[source_symbol]] <- prices
               successful_symbols <- successful_symbols + 1
               success <- TRUE
               break
@@ -276,7 +466,16 @@ price_data <- tryCatch({
     }
     
     if (!success) {
-      cat("  Warning: Could not fetch data for", symbol, "\n")
+      fallback_prices <- fetch_mutual_fund_fallback(source_symbol, average_cost)
+      if (!is.null(fallback_prices) && nrow(fallback_prices) > 0) {
+        price_list[[source_symbol]] <- fallback_prices
+        successful_symbols <- successful_symbols + 1
+        success <- TRUE
+      }
+    }
+
+    if (!success) {
+      cat("  Warning: Could not fetch data for", source_symbol, "(tried", paste(symbol_variants, collapse = ", "), ")\n")
     }
   }
   
@@ -309,7 +508,6 @@ performance_data <- tryCatch({
     "1y" = 365
   )
   
-  current_date <- Sys.Date()
   performance_list <- list()
   symbols <- unique(price_data$Symbol)
   
@@ -321,20 +519,32 @@ performance_data <- tryCatch({
       arrange(Date)
     
     if (nrow(symbol_prices) > 0) {
+      latest_price_date <- max(symbol_prices$Date, na.rm = TRUE)
       current_price <- tail(symbol_prices$Price, 1)
       
       performance_row <- data.frame(Symbol = symbol, Current_Price = current_price)
       
       for (period_name in names(periods)) {
-        days_back <- periods[[period_name]]
-        target_date <- current_date - days(days_back)
+        historical_price <- NULL
+
+        if (period_name == "1d") {
+          # 1-day change should use the previous available trading row.
+          if (nrow(symbol_prices) >= 2) {
+            historical_price <- symbol_prices |>
+              head(-1) |>
+              tail(1)
+          }
+        } else {
+          days_back <- periods[[period_name]]
+          target_date <- latest_price_date - days(days_back)
+          
+          # Find the closest available historical price on/before target date.
+          historical_price <- symbol_prices |>
+            filter(Date <= target_date) |>
+            tail(1)
+        }
         
-        # Find the closest available price to the target date
-        historical_price <- symbol_prices |>
-          filter(Date <= target_date) |>
-          tail(1)
-        
-        if (nrow(historical_price) > 0) {
+        if (!is.null(historical_price) && nrow(historical_price) > 0) {
           pct_change <- ((current_price - historical_price$Price) / historical_price$Price) * 100
           performance_row[[period_name]] <- round(pct_change, 2)
         } else {

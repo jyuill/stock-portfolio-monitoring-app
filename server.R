@@ -13,6 +13,15 @@ library(tidyr)
 source('global_data.R')
 
 server <- function(input, output, session) {
+  observe({
+    sector_choices <- c("All", sort(unique(portfolio_data$Sector)))
+    updateSelectInput(session, "sector_filter", choices = sector_choices, selected = "All")
+
+    account_choices <- strsplit(portfolio_data$Accounts, ",\\s*")
+    account_choices <- trimws(unlist(account_choices))
+    account_choices <- sort(unique(account_choices[!is.na(account_choices) & account_choices != ""]))
+    updateSelectInput(session, "account_filter", choices = c("All", account_choices), selected = "All")
+  })
   
   # Render portfolio summary using pre-loaded data
   output$portfolio_summary <- renderText({
@@ -40,6 +49,33 @@ server <- function(input, output, session) {
         perf_data <- perf_data |>
           filter(Symbol %in% symbols_to_show)
       }
+    }
+
+    # Apply sector filter
+    if (!is.null(input$sector_filter) && input$sector_filter != "All") {
+      symbols_in_sector <- portfolio_data |>
+        filter(Sector == input$sector_filter) |>
+        pull(Symbol)
+      perf_data <- perf_data |>
+        filter(Symbol %in% symbols_in_sector)
+    }
+
+    # Apply account filter
+    if (!is.null(input$account_filter) && input$account_filter != "All") {
+      symbols_in_account <- portfolio_data |>
+        rowwise() |>
+        mutate(
+          account_match = ifelse(
+            is.na(Accounts),
+            FALSE,
+            input$account_filter %in% trimws(unlist(strsplit(Accounts, ",\\s*")))
+          )
+        ) |>
+        ungroup() |>
+        filter(account_match) |>
+        pull(Symbol)
+      perf_data <- perf_data |>
+        filter(Symbol %in% symbols_in_account)
     }
     
     # Sort data
@@ -98,26 +134,50 @@ server <- function(input, output, session) {
   })
   
   # Render performance table
-  output$performance_table <- renderDT({
+  performance_table_data <- reactive({
     req(filtered_performance())
     
     # Join with portfolio data to show quantities
     table_data <- filtered_performance() |>
       left_join(portfolio_data, by = "Symbol") |>
-      select(Symbol, Current_Price, Average_Cost, Total_Quantity, Accounts, `1d`, `7d`, `30d`, `90d`, `6m`, `1y`) |>
       mutate(
-        Current_Price = round(Current_Price, 2),
-        Average_Cost = round(Average_Cost, 2),
-        Total_Quantity = round(Total_Quantity, 2)
+        Value = Current_Price * Total_Quantity
       )
+
+    filtered_total_value <- sum(table_data$Value, na.rm = TRUE)
+
+    table_data <- table_data |>
+      mutate(
+        `Portfolio%` = if (filtered_total_value > 0) {
+          (Value / filtered_total_value) * 100
+        } else {
+          NA_real_
+        }
+      ) |>
+      select(Symbol, Sector, Accounts, Average_Cost, Total_Quantity, Current_Price, Value, `Portfolio%`, `1d`, `7d`, `30d`, `90d`, `6m`, `1y`) |>
+      rename(
+        Quantity = Total_Quantity
+      )
+
+    table_data
+  })
+
+  output$performance_table <- renderDT({
+    req(performance_table_data())
+    table_data <- performance_table_data() |>
+      mutate(`Portfolio%` = `Portfolio%` / 100)
     
     datatable(table_data,
               options = list(
-                pageLength = 30,
+                pageLength = 50,
                 scrollX = TRUE,
                 dom = 'Bfrtip'
               ),
               rownames = FALSE) |>
+      formatCurrency(columns = c("Average_Cost", "Current_Price"), currency = "$", digits = 2) |>
+      formatCurrency(columns = c("Value"), currency = "$", digits = 0) |>
+      formatRound(columns = c("Quantity"), digits = 0) |>
+      formatPercentage(columns = c("Portfolio%"), digits = 1) |>
       formatRound(columns = c("1d", "7d", "30d", "90d", "6m", "1y"), digits = 2) |>
       formatStyle(columns = c("1d", "7d", "30d", "90d", "6m", "1y"),
                   backgroundColor = styleInterval(cuts = c(-5, 0, 5),
@@ -132,6 +192,27 @@ server <- function(input, output, session) {
       "Total price records: ", nrow(price_data), "\n",
       "Performance calculations: ", nrow(performance_data), "\n",
       "Data loaded: ", format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+    )
+  })
+
+  output$data_source_validation <- renderDT({
+    req(exists("holdings_source_summary"), nrow(holdings_source_summary) > 0)
+
+    validation_data <- holdings_source_summary |>
+      mutate(
+        Latest_Date = as.character(Latest_Date)
+      )
+
+    datatable(
+      validation_data,
+      options = list(
+        pageLength = 10,
+        searching = FALSE,
+        paging = FALSE,
+        info = FALSE,
+        scrollX = TRUE
+      ),
+      rownames = FALSE
     )
   })
 }

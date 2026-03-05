@@ -11,7 +11,27 @@ ui <- dashboardPage(
       menuItem("Portfolio Overview", tabName = "overview", icon = icon("chart-line")),
       menuItem("Performance Analysis", tabName = "performance", icon = icon("table")),
       menuItem("Settings", tabName = "settings", icon = icon("cog"))
-    )
+    ),
+    hr(),
+    h4("Filters"),
+    textInput("symbol_filter", 
+              "Symbols (comma-separated)",
+              placeholder = "e.g., AAPL, GOOGL, TSLA"),
+    selectInput("sector_filter", "Sector:",
+                choices = c("All"),
+                selected = "All"),
+    selectInput("account_filter", "Account:",
+                choices = c("All"),
+                selected = "All"),
+    selectInput("sort_by", "Sort by:",
+                choices = list("Symbol" = "Symbol",
+                               "1 Day" = "1d",
+                               "7 Day" = "7d", 
+                               "30 Day" = "30d",
+                               "90 Day" = "90d",
+                               "6 Month" = "6m",
+                               "1 Year" = "1y"),
+                selected = "Symbol")
   ),
   
   dashboardBody(
@@ -47,30 +67,8 @@ ui <- dashboardPage(
         
         fluidRow(
           box(
-            title = "Performance Filters", status = "info", solidHeader = TRUE,
-            width = 3,
-            textInput("symbol_filter", 
-                     "Filter Symbols (comma-separated):",
-                     placeholder = "e.g., AAPL, GOOGL, TSLA"),
-            selectInput("sort_by", "Sort by:",
-                       choices = list("Symbol" = "Symbol",
-                                    "1 Day" = "1d",
-                                    "7 Day" = "7d", 
-                                    "30 Day" = "30d",
-                                    "90 Day" = "90d",
-                                    "6 Month" = "6m",
-                                    "1 Year" = "1y"),
-                       selected = "Symbol"),
-            hr(),
-            h5("Data Source:"),
-            p("TD Holdings sheet from Google Sheets"),
-            p("Filters for most recent date automatically"),
-            p("Aggregates holdings across all accounts")
-          ),
-          
-          box(
             title = "Performance Heatmap", status = "success", solidHeader = TRUE,
-            width = 9,
+            width = 12,
             plotlyOutput("performance_heatmap", height = "600px")
           )
         )
@@ -137,6 +135,10 @@ ui <- dashboardPage(
             width = 6,
             h4("Current Session"),
             verbatimTextOutput("session_stats"),
+            
+            hr(),
+            h4("Source Validation"),
+            DTOutput("data_source_validation"),
             
             hr(),
             h4("Data Quality"),
