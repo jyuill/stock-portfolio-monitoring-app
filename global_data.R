@@ -341,6 +341,38 @@ price_data <- tryCatch({
     suppressWarnings(as.numeric(x_chr))
   }
 
+  fetch_live_quote_price <- function(ticker) {
+    quote_data <- tryCatch(
+      getQuote(ticker, src = "yahoo"),
+      error = function(e) NULL
+    )
+    if (is.null(quote_data) || nrow(quote_data) == 0) return(NA_real_)
+
+    # Prefer explicit last/market price fields; avoid taking arbitrary numeric fields.
+    quote_row <- quote_data[1, , drop = FALSE]
+    quote_cols <- names(quote_row)
+    quote_cols_lower <- tolower(quote_cols)
+
+    preferred_patterns <- c(
+      "^last trade \\(price only\\)$",
+      "^last$",
+      "regularmarketprice",
+      "^price$",
+      "last trade"
+    )
+
+    for (pattern in preferred_patterns) {
+      matches <- which(grepl(pattern, quote_cols_lower))
+      if (length(matches) == 0) next
+      for (idx in matches) {
+        val <- parse_quote_numeric(quote_row[[idx]][1])
+        if (!is.na(val) && val > 0) return(val)
+      }
+    }
+
+    NA_real_
+  }
+
   mutual_fund_fallback_tickers <- list(
     TDB905 = c("TDB905.CF", "TDB905.TO", "TDB905"),
     TDB3085 = c("TDB3085.CF", "TDB3085.TO", "TDB3085")
@@ -453,6 +485,23 @@ price_data <- tryCatch({
               arrange(Date)
             
             if (nrow(prices) > 0) {
+              # Overlay live quote when available:
+              # - during market hours: append today's quote row
+              # - after close: replace same-day row with latest quote if needed
+              live_price <- fetch_live_quote_price(variant)
+              if (!is.na(live_price) && live_price > 0) {
+                latest_hist_date <- max(prices$Date, na.rm = TRUE)
+                if (Sys.Date() > latest_hist_date) {
+                  prices <- bind_rows(
+                    prices,
+                    data.frame(Date = Sys.Date(), Price = live_price, Symbol = source_symbol)
+                  ) |>
+                    arrange(Date)
+                } else if (Sys.Date() == latest_hist_date) {
+                  prices$Price[nrow(prices)] <- live_price
+                }
+              }
+
               price_list[[source_symbol]] <- prices
               successful_symbols <- successful_symbols + 1
               success <- TRUE

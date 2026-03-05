@@ -141,7 +141,14 @@ server <- function(input, output, session) {
     table_data <- filtered_performance() |>
       left_join(portfolio_data, by = "Symbol") |>
       mutate(
-        Value = Current_Price * Total_Quantity
+        Value = Current_Price * Total_Quantity,
+        Cost_Basis = Average_Cost * Total_Quantity,
+        `Gain/Loss` = Value - Cost_Basis,
+        `% Gain/Loss` = ifelse(
+          Cost_Basis != 0,
+          `Gain/Loss` / Cost_Basis,
+          NA_real_
+        )
       )
 
     filtered_total_value <- sum(table_data$Value, na.rm = TRUE)
@@ -154,7 +161,7 @@ server <- function(input, output, session) {
           NA_real_
         }
       ) |>
-      select(Symbol, Sector, Accounts, Average_Cost, Total_Quantity, Current_Price, Value, `Portfolio%`, `1d`, `7d`, `30d`, `90d`, `6m`, `1y`) |>
+      select(Symbol, Sector, Accounts, Average_Cost, Total_Quantity, Current_Price, Value, `Gain/Loss`, `% Gain/Loss`, `Portfolio%`, `1d`, `7d`, `30d`, `90d`, `6m`, `1y`) |>
       rename(
         Quantity = Total_Quantity
       )
@@ -165,7 +172,15 @@ server <- function(input, output, session) {
   output$performance_table <- renderDT({
     req(performance_table_data())
     table_data <- performance_table_data() |>
-      mutate(`Portfolio%` = `Portfolio%` / 100)
+      mutate(
+        `Portfolio%` = `Portfolio%` / 100,
+        `1d` = `1d` / 100,
+        `7d` = `7d` / 100,
+        `30d` = `30d` / 100,
+        `90d` = `90d` / 100,
+        `6m` = `6m` / 100,
+        `1y` = `1y` / 100
+      )
     
     datatable(table_data,
               options = list(
@@ -175,12 +190,16 @@ server <- function(input, output, session) {
               ),
               rownames = FALSE) |>
       formatCurrency(columns = c("Average_Cost", "Current_Price"), currency = "$", digits = 2) |>
-      formatCurrency(columns = c("Value"), currency = "$", digits = 0) |>
+      formatCurrency(columns = c("Value", "Gain/Loss"), currency = "$", digits = 0) |>
       formatRound(columns = c("Quantity"), digits = 0) |>
       formatPercentage(columns = c("Portfolio%"), digits = 1) |>
-      formatRound(columns = c("1d", "7d", "30d", "90d", "6m", "1y"), digits = 2) |>
+      formatPercentage(columns = c("% Gain/Loss"), digits = 0) |>
+      formatPercentage(columns = c("1d", "7d", "30d", "90d", "6m", "1y"), digits = 1) |>
+      formatStyle(columns = c("% Gain/Loss"),
+                  backgroundColor = styleInterval(cuts = c(-0.05, 0, 0.05),
+                                                values = c("#ffcccc", "#ffffcc", "#ccffcc", "#ccffff"))) |>
       formatStyle(columns = c("1d", "7d", "30d", "90d", "6m", "1y"),
-                  backgroundColor = styleInterval(cuts = c(-5, 0, 5),
+                  backgroundColor = styleInterval(cuts = c(-0.05, 0, 0.05),
                                                 values = c("#ffcccc", "#ffffcc", "#ccffcc", "#ccffff")))
   })
   
