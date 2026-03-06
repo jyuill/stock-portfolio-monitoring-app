@@ -13,6 +13,62 @@ library(tidyr)
 source('global_data.R')
 
 server <- function(input, output, session) {
+  parse_numeric <- function(x) {
+    cleaned <- gsub(",", "", as.character(x))
+    cleaned <- gsub("[^0-9.\\-]", "", cleaned)
+    suppressWarnings(as.numeric(cleaned))
+  }
+
+  get_usdcad_rate <- reactive({
+    quote_data <- tryCatch(
+      getQuote("USDCAD=X", src = "yahoo"),
+      error = function(e) NULL
+    )
+
+    if (!is.null(quote_data) && nrow(quote_data) > 0) {
+      for (col in names(quote_data)) {
+        val <- parse_numeric(quote_data[[col]][1])
+        if (!is.na(val) && val > 0) return(val)
+      }
+    }
+
+    fx_hist <- tryCatch(
+      getSymbols("USDCAD=X", src = "yahoo", from = Sys.Date() - 14, to = Sys.Date(), auto.assign = FALSE, warnings = FALSE),
+      error = function(e) NULL
+    )
+
+    if (!is.null(fx_hist) && nrow(fx_hist) > 0) {
+      fx_close_col <- "USDCAD=X.Close"
+      if (!fx_close_col %in% colnames(fx_hist)) {
+        fx_close_col <- "USDCAD=X.Adjusted"
+      }
+      if (fx_close_col %in% colnames(fx_hist)) {
+        fx_val <- tail(as.numeric(fx_hist[, fx_close_col]), 1)
+        if (!is.na(fx_val) && fx_val > 0) return(fx_val)
+      }
+    }
+
+    1
+  })
+
+  convert_amount <- function(amount, from_currency, to_currency, fx_usdcad) {
+    from <- str_to_upper(coalesce(from_currency, "CAD"))
+    to <- str_to_upper(coalesce(to_currency, "CAD"))
+    output <- as.numeric(amount)
+
+    idx_usd_to_cad <- from == "USD" & to == "CAD"
+    output[idx_usd_to_cad] <- output[idx_usd_to_cad] * fx_usdcad
+
+    idx_cad_to_usd <- from == "CAD" & to == "USD"
+    output[idx_cad_to_usd] <- output[idx_cad_to_usd] / fx_usdcad
+
+    output
+  }
+
+  target_currency <- reactive({
+    if (identical(input$currency_view, "cad")) "CAD" else "NATIVE"
+  })
+
   observe({
     sector_choices <- c("All", sort(unique(portfolio_data$Sector)))
     updateSelectInput(session, "sector_filter", choices = sector_choices, selected = "All")
@@ -135,17 +191,31 @@ server <- function(input, output, session) {
           NA_real_
         ),
         Accounts = paste(sort(unique(Account)), collapse = ", "),
+        Cost_Currency = first(coalesce(Cost_Currency, "CAD")),
+        Price_Currency = first(coalesce(Price_Currency, "CAD")),
         .groups = "drop"
       ) |>
       left_join(current_prices, by = "Symbol") |>
       mutate(
+        fx_usdcad = get_usdcad_rate(),
+        Average_Cost = if (target_currency() == "CAD") {
+          convert_amount(Average_Cost, Cost_Currency, "CAD", fx_usdcad)
+        } else {
+          Average_Cost
+        },
+        Current_Price = if (target_currency() == "CAD") {
+          convert_amount(Current_Price, Price_Currency, "CAD", fx_usdcad)
+        } else {
+          Current_Price
+        },
         Value = Current_Price * Quantity,
-        Investment = Average_Cost * Quantity,
+        Investment = ifelse(is.na(Average_Cost), 0, Average_Cost * Quantity),
         Gain_Loss = Value - Investment
-      )
+      ) |>
+      select(-fx_usdcad)
   })
 
-  account_breakdown <- reactive({
+  converted_positions <- reactive({
     positions <- filtered_positions()
     if (nrow(positions) == 0) {
       return(data.frame())
@@ -154,13 +224,35 @@ server <- function(input, output, session) {
     current_prices <- filtered_performance() |>
       select(Symbol, Current_Price)
 
-    output <- positions |>
+    positions |>
       left_join(current_prices, by = "Symbol") |>
       mutate(
-        Value = Current_Price * Quantity,
-        Investment = Average_Cost * Quantity,
+        Cost_Currency = coalesce(Cost_Currency, "CAD"),
+        Price_Currency = coalesce(Price_Currency, "CAD"),
+        fx_usdcad = get_usdcad_rate(),
+        Average_Cost_Conv = if (target_currency() == "CAD") {
+          convert_amount(Average_Cost, Cost_Currency, "CAD", fx_usdcad)
+        } else {
+          Average_Cost
+        },
+        Current_Price_Conv = if (target_currency() == "CAD") {
+          convert_amount(Current_Price, Price_Currency, "CAD", fx_usdcad)
+        } else {
+          Current_Price
+        },
+        Value = Current_Price_Conv * Quantity,
+        Investment = ifelse(is.na(Average_Cost_Conv), 0, Average_Cost_Conv * Quantity),
         Gain_Loss = Value - Investment
-      ) |>
+      )
+  })
+
+  account_breakdown <- reactive({
+    positions <- converted_positions()
+    if (nrow(positions) == 0) {
+      return(data.frame())
+    }
+
+    output <- positions |>
       group_by(Account) |>
       summarise(
         Value = sum(Value, na.rm = TRUE),
@@ -222,7 +314,7 @@ server <- function(input, output, session) {
     total_investment <- sum(data$Investment, na.rm = TRUE)
     valueBox(
       value = fmt_currency(total_investment, 0),
-      subtitle = "Total Investment",
+      subtitle = if (target_currency() == "CAD") "Total Investment (CAD)" else "Total Investment",
       icon = icon("wallet"),
       color = "light-blue"
     )
@@ -233,7 +325,7 @@ server <- function(input, output, session) {
     total_value <- sum(data$Value, na.rm = TRUE)
     valueBox(
       value = fmt_currency(total_value, 0),
-      subtitle = "Current Portfolio Value",
+      subtitle = if (target_currency() == "CAD") "Current Portfolio Value (CAD)" else "Current Portfolio Value",
       icon = icon("chart-pie"),
       color = "aqua"
     )
@@ -242,7 +334,8 @@ server <- function(input, output, session) {
   output$overview_total_gain_loss <- renderValueBox({
     data <- overview_symbol_data()
     total_investment <- sum(data$Investment, na.rm = TRUE)
-    total_gain_loss <- sum(data$Gain_Loss, na.rm = TRUE)
+    total_value <- sum(data$Value, na.rm = TRUE)
+    total_gain_loss <- total_value - total_investment
     total_gain_loss_pct <- ifelse(total_investment > 0, total_gain_loss / total_investment, NA_real_)
     gain_loss_label <- paste0(
       fmt_currency(total_gain_loss, 0),
@@ -253,7 +346,7 @@ server <- function(input, output, session) {
 
     valueBox(
       value = gain_loss_label,
-      subtitle = "Total Gain / Loss",
+      subtitle = if (target_currency() == "CAD") "Total Gain / Loss (CAD)" else "Total Gain / Loss",
       icon = icon("balance-scale"),
       color = ifelse(total_gain_loss >= 0, "green", "red")
     )
@@ -331,7 +424,7 @@ server <- function(input, output, session) {
       add_trace(y = ~Gain_Loss, type = "bar", name = "Gain/Loss", marker = list(color = "#3182bd")) |>
       layout(
         barmode = "group",
-        yaxis = list(title = "Amount ($)"),
+        yaxis = list(title = if (target_currency() == "CAD") "Amount (CAD)" else "Amount"),
         xaxis = list(
           title = "Account",
           categoryorder = "array",
@@ -392,6 +485,19 @@ server <- function(input, output, session) {
     table_data <- filtered_performance() |>
       left_join(portfolio_data, by = "Symbol") |>
       mutate(
+        Cost_Currency = coalesce(Cost_Currency, "CAD"),
+        Price_Currency = coalesce(Price_Currency, "CAD"),
+        fx_usdcad = get_usdcad_rate(),
+        Average_Cost = if (target_currency() == "CAD") {
+          convert_amount(Average_Cost, Cost_Currency, "CAD", fx_usdcad)
+        } else {
+          Average_Cost
+        },
+        Current_Price = if (target_currency() == "CAD") {
+          convert_amount(Current_Price, Price_Currency, "CAD", fx_usdcad)
+        } else {
+          Current_Price
+        },
         Value = Current_Price * Total_Quantity,
         Cost_Basis = Average_Cost * Total_Quantity,
         `Gain/Loss` = Value - Cost_Basis,

@@ -13,7 +13,7 @@ ui <- dashboardPage(
       menuItem("Settings", tabName = "settings", icon = icon("cog"))
     ),
     hr(),
-    h4("Filters"),
+    h4("Filters", style = "margin-left: 6px;"),
     textInput("symbol_filter", 
               "Symbols (comma-separated)",
               placeholder = "e.g., AAPL, GOOGL, TSLA"),
@@ -23,6 +23,10 @@ ui <- dashboardPage(
     selectInput("account_filter", "Account:",
                 choices = c("All"),
                 selected = "All"),
+    radioButtons("currency_view", "Currency View",
+                 choices = c("Native (as sourced)" = "native",
+                             "CAD (convert USD)" = "cad"),
+                 selected = "native"),
     selectInput("sort_by", "Sort by:",
                 choices = list("Symbol" = "Symbol",
                                "1 Day" = "1d",
@@ -31,7 +35,11 @@ ui <- dashboardPage(
                                "90 Day" = "90d",
                                "6 Month" = "6m",
                                "1 Year" = "1y"),
-                selected = "Symbol")
+                selected = "Symbol"),
+    tags$p(
+      "Note: amounts do not include cash held in accounts",
+      style = "font-size: 12px; color: #8f98a3; margin-top: 8px; margin-left: 6px;"
+    )
   ),
   
   dashboardBody(

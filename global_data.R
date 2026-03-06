@@ -95,7 +95,7 @@ portfolio_data <- tryCatch({
   }
 
   load_holdings_meta <- function() {
-    meta_cfg <- list(name = "Holdings meta", range = "B8:D100")
+    meta_cfg <- list(name = "Holdings meta", range = "B8:F100")
     cat("Loading holdings metadata from", meta_cfg$name, "(", meta_cfg$range, ")\n")
 
     raw_meta <- read_sheet(
@@ -111,6 +111,9 @@ portfolio_data <- tryCatch({
         Source_Symbol = character(),
         Yahoo_Symbol = character(),
         Sector = character(),
+        Cost_Currency = character(),
+        Price_Currency = character(),
+        Manual_Price = numeric(),
         stringsAsFactors = FALSE
       ))
     }
@@ -118,16 +121,20 @@ portfolio_data <- tryCatch({
     source_col <- find_column_name(raw_meta, "sourcesymbol")
     yahoo_col <- find_column_name(raw_meta, "yahoosymbol")
     sector_col <- find_column_name(raw_meta, "sector")
+    currency_col <- find_column_name(raw_meta, "currency")
+    manual_price_col <- find_column_name(raw_meta, "manualprice")
 
     if (is.na(source_col)) {
       stop("Holdings meta sheet is missing required column: source_symbol")
     }
 
-    selected_cols <- c(source_col, yahoo_col, sector_col)
+    selected_cols <- c(source_col, yahoo_col, sector_col, currency_col, manual_price_col)
     selected_cols <- selected_cols[!is.na(selected_cols)]
     rename_map <- c(Source_Symbol = source_col)
     if (!is.na(yahoo_col)) rename_map <- c(rename_map, Yahoo_Symbol = yahoo_col)
     if (!is.na(sector_col)) rename_map <- c(rename_map, Sector = sector_col)
+    if (!is.na(currency_col)) rename_map <- c(rename_map, Currency = currency_col)
+    if (!is.na(manual_price_col)) rename_map <- c(rename_map, Manual_Price = manual_price_col)
 
     meta <- raw_meta |>
       select(any_of(selected_cols)) |>
@@ -139,18 +146,83 @@ portfolio_data <- tryCatch({
     if (!"Sector" %in% names(meta)) {
       meta$Sector <- NA_character_
     }
+    if (!"Currency" %in% names(meta)) {
+      meta$Currency <- NA_character_
+    }
+    if (!"Manual_Price" %in% names(meta)) {
+      meta$Manual_Price <- NA_real_
+    }
+
+    normalize_currency <- function(x) {
+      x <- str_to_upper(str_trim(as.character(x)))
+      if (is.na(x) || x == "") return(NA_character_)
+      if (x %in% c("CAD", "CA")) return("CAD")
+      if (x %in% c("USD", "US")) return("USD")
+      NA_character_
+    }
+
+    parse_currency_pair <- function(code) {
+      clean_code <- gsub("[^A-Za-z]", "", str_to_upper(str_trim(as.character(code))))
+      if (is.na(clean_code) || clean_code == "") {
+        return(c("CAD", "CAD"))
+      }
+
+      n <- nchar(clean_code)
+      cost_curr <- NA_character_
+      price_curr <- NA_character_
+
+      if (n >= 6) {
+        cost_curr <- normalize_currency(substr(clean_code, 1, 3))
+        price_curr <- normalize_currency(substr(clean_code, n - 2, n))
+      }
+      if (is.na(cost_curr) || is.na(price_curr)) {
+        if (n >= 4) {
+          cost_curr <- normalize_currency(substr(clean_code, 1, 2))
+          price_curr <- normalize_currency(substr(clean_code, n - 1, n))
+        }
+      }
+
+      c(
+        ifelse(is.na(cost_curr), "CAD", cost_curr),
+        ifelse(is.na(price_curr), "CAD", price_curr)
+      )
+    }
+
+    parse_meta_numeric <- function(x) {
+      x_chr <- as.character(x)
+      is_paren_negative <- grepl("^\\s*\\(.*\\)\\s*$", x_chr)
+
+      cleaned <- x_chr
+      cleaned <- gsub(",", "", cleaned)
+      cleaned <- gsub("[()]", "", cleaned)
+      cleaned <- gsub("[^0-9.\\-]", "", cleaned)
+      cleaned[cleaned == ""] <- NA_character_
+
+      out <- suppressWarnings(as.numeric(cleaned))
+      out[is_paren_negative & !is.na(out)] <- -out[is_paren_negative & !is.na(out)]
+      out
+    }
 
     meta <- meta |>
       mutate(
         Source_Symbol = str_trim(str_to_upper(as.character(Source_Symbol))),
         Yahoo_Symbol = str_trim(str_to_upper(as.character(Yahoo_Symbol))),
-        Sector = str_trim(as.character(Sector))
+        Sector = str_trim(as.character(Sector)),
+        Currency = str_trim(str_to_upper(as.character(Currency))),
+        Manual_Price = parse_meta_numeric(Manual_Price)
       ) |>
       filter(!is.na(Source_Symbol), Source_Symbol != "") |>
       mutate(
         Yahoo_Symbol = ifelse(Yahoo_Symbol == "", NA_character_, Yahoo_Symbol),
-        Sector = ifelse(Sector == "", NA_character_, Sector)
+        Sector = ifelse(Sector == "", NA_character_, Sector),
+        Currency = ifelse(Currency == "", NA_character_, Currency)
       ) |>
+      rowwise() |>
+      mutate(
+        Cost_Currency = parse_currency_pair(Currency)[1],
+        Price_Currency = parse_currency_pair(Currency)[2]
+      ) |>
+      ungroup() |>
       group_by(Source_Symbol) |>
       summarise(
         Yahoo_Symbol = {
@@ -160,6 +232,18 @@ portfolio_data <- tryCatch({
         Sector = {
           vals <- na.omit(Sector)
           if (length(vals) > 0) vals[1] else NA_character_
+        },
+        Cost_Currency = {
+          vals <- na.omit(Cost_Currency)
+          if (length(vals) > 0) vals[1] else "CAD"
+        },
+        Price_Currency = {
+          vals <- na.omit(Price_Currency)
+          if (length(vals) > 0) vals[1] else "CAD"
+        },
+        Manual_Price = {
+          vals <- na.omit(Manual_Price)
+          if (length(vals) > 0) vals[1] else NA_real_
         },
         .groups = "drop"
       )
@@ -309,6 +393,9 @@ portfolio_data <- tryCatch({
     mutate(
       Yahoo_Symbol = coalesce(Yahoo_Symbol, Symbol),
       Sector = ifelse(is.na(Sector) | Sector == "", "Unclassified", Sector),
+      Cost_Currency = coalesce(Cost_Currency, "CAD"),
+      Price_Currency = coalesce(Price_Currency, "CAD"),
+      Manual_Price = as.numeric(Manual_Price),
       Average_Cost = round(Average_Cost, 4)
     ) |>
     arrange(Symbol, Account)
@@ -327,6 +414,9 @@ portfolio_data <- tryCatch({
       ),
       Yahoo_Symbol = first(Yahoo_Symbol),
       Sector = first(Sector),
+      Cost_Currency = first(Cost_Currency),
+      Price_Currency = first(Price_Currency),
+      Manual_Price = first(Manual_Price),
       .groups = "drop"
     ) |>
     mutate(Average_Cost = round(Average_Cost, 4)) |>
@@ -350,7 +440,7 @@ portfolio_data <- tryCatch({
 cat("\nFetching price data from Yahoo Finance...\n")
 price_data <- tryCatch({
   symbol_map <- portfolio_data |>
-    select(Symbol, Yahoo_Symbol, Average_Cost)
+    select(Symbol, Yahoo_Symbol, Average_Cost, Manual_Price)
 
   parse_quote_numeric <- function(x) {
     x_chr <- as.character(x)
@@ -396,29 +486,37 @@ price_data <- tryCatch({
     TDB905 = c("TDB905.CF", "TDB905.TO", "TDB905"),
     TDB3085 = c("TDB3085.CF", "TDB3085.TO", "TDB3085")
   )
+  manual_only_symbols <- c("GIC")
 
-  fetch_mutual_fund_fallback <- function(source_symbol, avg_cost) {
+  fetch_mutual_fund_fallback <- function(source_symbol, avg_cost, manual_price = NA_real_) {
     candidate_tickers <- mutual_fund_fallback_tickers[[source_symbol]]
-    if (is.null(candidate_tickers)) {
-      return(NULL)
+    if (!is.null(candidate_tickers)) {
+      for (ticker in candidate_tickers) {
+        quote_data <- tryCatch(
+          getQuote(ticker, src = "yahoo"),
+          error = function(e) NULL
+        )
+        if (is.null(quote_data) || nrow(quote_data) == 0) next
+
+        numeric_candidates <- suppressWarnings(unlist(lapply(quote_data[1, ], parse_quote_numeric)))
+        numeric_candidates <- numeric_candidates[!is.na(numeric_candidates) & numeric_candidates > 0]
+        if (length(numeric_candidates) == 0) next
+
+        price_val <- numeric_candidates[1]
+        cat("  Fallback quote success for", source_symbol, "using", ticker, "at", round(price_val, 4), "\n")
+        return(data.frame(
+          Date = Sys.Date(),
+          Price = as.numeric(price_val),
+          Symbol = source_symbol
+        ))
+      }
     }
 
-    for (ticker in candidate_tickers) {
-      quote_data <- tryCatch(
-        getQuote(ticker, src = "yahoo"),
-        error = function(e) NULL
-      )
-      if (is.null(quote_data) || nrow(quote_data) == 0) next
-
-      numeric_candidates <- suppressWarnings(unlist(lapply(quote_data[1, ], parse_quote_numeric)))
-      numeric_candidates <- numeric_candidates[!is.na(numeric_candidates) & numeric_candidates > 0]
-      if (length(numeric_candidates) == 0) next
-
-      price_val <- numeric_candidates[1]
-      cat("  Fallback quote success for", source_symbol, "using", ticker, "at", round(price_val, 4), "\n")
+    if (!is.na(manual_price) && manual_price > 0) {
+      cat("  Fallback to Manual_Price for", source_symbol, "at", round(manual_price, 4), "\n")
       return(data.frame(
         Date = Sys.Date(),
-        Price = as.numeric(price_val),
+        Price = as.numeric(manual_price),
         Symbol = source_symbol
       ))
     }
@@ -469,9 +567,21 @@ price_data <- tryCatch({
     source_symbol <- symbol_map$Symbol[i]
     yahoo_symbol <- symbol_map$Yahoo_Symbol[i]
     average_cost <- symbol_map$Average_Cost[i]
+    manual_price <- symbol_map$Manual_Price[i]
     
     if (i %% 5 == 0 || i == total_symbols) {
       cat("  Progress:", i, "/", total_symbols, "symbols processed\n")
+    }
+
+    if (source_symbol %in% manual_only_symbols && !is.na(manual_price) && manual_price > 0) {
+      cat("  Manual-only price for", source_symbol, "at", round(manual_price, 4), "\n")
+      price_list[[source_symbol]] <- data.frame(
+        Date = Sys.Date(),
+        Price = as.numeric(manual_price),
+        Symbol = source_symbol
+      )
+      successful_symbols <- successful_symbols + 1
+      next
     }
     
     # Try different symbol formats if needed
@@ -534,7 +644,7 @@ price_data <- tryCatch({
     }
     
     if (!success) {
-      fallback_prices <- fetch_mutual_fund_fallback(source_symbol, average_cost)
+      fallback_prices <- fetch_mutual_fund_fallback(source_symbol, average_cost, manual_price)
       if (!is.null(fallback_prices) && nrow(fallback_prices) > 0) {
         price_list[[source_symbol]] <- fallback_prices
         successful_symbols <- successful_symbols + 1
