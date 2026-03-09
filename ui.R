@@ -36,6 +36,14 @@ ui <- dashboardPage(
                                "6 Month" = "6m",
                                "1 Year" = "1y"),
                 selected = "Symbol"),
+    actionButton(
+      "refresh_data",
+      "Refresh Data",
+      icon = icon("rotate"),
+      width = "auto",
+      class = "btn-success",
+      style = "display: block; width: calc(100% - 24px); margin: 8px 12px 0 12px; padding: 8px 12px; background-color: #b9e9c9; border-color: #93d7ab; color: #1f5132; font-weight: 600;"
+    ),
     tags$p(
       "Note: amounts do not include cash held in accounts",
       style = "font-size: 12px; color: #8f98a3; margin-top: 8px; margin-left: 6px;"

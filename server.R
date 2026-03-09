@@ -13,6 +13,8 @@ library(tidyr)
 source('global_data.R')
 
 server <- function(input, output, session) {
+  data_version <- reactiveVal(0)
+
   parse_numeric <- function(x) {
     cleaned <- gsub(",", "", as.character(x))
     cleaned <- gsub("[^0-9.\\-]", "", cleaned)
@@ -69,11 +71,55 @@ server <- function(input, output, session) {
     if (identical(input$currency_view, "cad")) "CAD" else "NATIVE"
   })
 
+  portfolio_data_r <- reactive({
+    data_version()
+    portfolio_data
+  })
+
+  portfolio_positions_r <- reactive({
+    data_version()
+    portfolio_positions
+  })
+
+  price_data_r <- reactive({
+    data_version()
+    price_data
+  })
+
+  performance_data_r <- reactive({
+    data_version()
+    performance_data
+  })
+
+  holdings_source_summary_r <- reactive({
+    data_version()
+    if (exists("holdings_source_summary", inherits = TRUE)) {
+      holdings_source_summary
+    } else {
+      data.frame()
+    }
+  })
+
+  observeEvent(input$refresh_data, {
+    showNotification("Refreshing data from Google Sheets and market sources...", type = "message", duration = 3)
+    tryCatch({
+      source("global_data.R", local = FALSE)
+      data_version(data_version() + 1)
+      showNotification("Data refresh complete.", type = "message", duration = 3)
+    }, error = function(e) {
+      showNotification(
+        paste("Data refresh failed:", e$message),
+        type = "error",
+        duration = 8
+      )
+    })
+  })
+
   observe({
-    sector_choices <- c("All", sort(unique(portfolio_data$Sector)))
+    sector_choices <- c("All", sort(unique(portfolio_data_r()$Sector)))
     updateSelectInput(session, "sector_filter", choices = sector_choices, selected = "All")
 
-    account_choices <- sort(unique(portfolio_positions$Account))
+    account_choices <- sort(unique(portfolio_positions_r()$Account))
     account_choices <- account_choices[!is.na(account_choices) & account_choices != ""]
     updateSelectInput(session, "account_filter", choices = c("All", account_choices), selected = "All")
   })
@@ -81,10 +127,10 @@ server <- function(input, output, session) {
   # Render portfolio summary using pre-loaded data
   output$portfolio_summary <- renderText({
     paste0(
-      "Portfolio loaded: ", nrow(portfolio_data), " unique assets",
-      " | Data from: ", format(max(portfolio_data$Date), "%B %d, %Y"),
-      " | Total positions: ", sum(portfolio_data$Total_Quantity > 0, na.rm = TRUE),
-      " | Price data for: ", length(unique(price_data$Symbol)), " symbols"
+      "Portfolio loaded: ", nrow(portfolio_data_r()), " unique assets",
+      " | Data from: ", format(max(portfolio_data_r()$Date), "%B %d, %Y"),
+      " | Total positions: ", sum(portfolio_data_r()$Total_Quantity > 0, na.rm = TRUE),
+      " | Price data for: ", length(unique(price_data_r()$Symbol)), " symbols"
     )
   })
   
@@ -92,7 +138,7 @@ server <- function(input, output, session) {
   filtered_performance <- reactive({
     #req(input$refresh_data) # to show data on load, not require click on refresh btn
     
-    perf_data <- performance_data
+    perf_data <- performance_data_r()
     
     # Apply symbol filter
     if (!is.null(input$symbol_filter) && input$symbol_filter != "") {
@@ -108,7 +154,7 @@ server <- function(input, output, session) {
 
     # Apply sector filter
     if (!is.null(input$sector_filter) && input$sector_filter != "All") {
-      symbols_in_sector <- portfolio_data |>
+      symbols_in_sector <- portfolio_data_r() |>
         filter(Sector == input$sector_filter) |>
         pull(Symbol)
       perf_data <- perf_data |>
@@ -117,7 +163,7 @@ server <- function(input, output, session) {
 
     # Apply account filter
     if (!is.null(input$account_filter) && input$account_filter != "All") {
-      symbols_in_account <- portfolio_data |>
+      symbols_in_account <- portfolio_data_r() |>
         rowwise() |>
         mutate(
           account_match = ifelse(
@@ -146,7 +192,7 @@ server <- function(input, output, session) {
   })
 
   filtered_positions <- reactive({
-    positions <- portfolio_positions
+    positions <- portfolio_positions_r()
 
     if (!is.null(input$symbol_filter) && input$symbol_filter != "") {
       symbols_to_show <- str_split(str_to_upper(input$symbol_filter), "[,\\s]+")[[1]]
@@ -469,7 +515,7 @@ server <- function(input, output, session) {
     ggplotly(p, tooltip = c("x", "y", "fill")) |>
       layout(title = list(text = paste0("Stock Performance Heatmap<br>",
                                        "<sub>Portfolio data from ", 
-                                       format(max(portfolio_data$Date), "%Y-%m-%d"), 
+                                       format(max(portfolio_data_r()$Date), "%Y-%m-%d"), 
                                        "</sub>"),
                          pad = list(t = 0, b=20), # no effect
                          font = list(size = 18, color = "green", style = "italic"), # only size, color has effect
@@ -483,7 +529,7 @@ server <- function(input, output, session) {
     
     # Join with portfolio data to show quantities
     table_data <- filtered_performance() |>
-      left_join(portfolio_data, by = "Symbol") |>
+      left_join(portfolio_data_r(), by = "Symbol") |>
       mutate(
         Cost_Currency = coalesce(Cost_Currency, "CAD"),
         Price_Currency = coalesce(Price_Currency, "CAD"),
@@ -563,18 +609,19 @@ server <- function(input, output, session) {
   # Add session statistics output
   output$session_stats <- renderText({
     paste0(
-      "Portfolio symbols: ", nrow(portfolio_data), "\n",
-      "Symbols with price data: ", length(unique(price_data$Symbol)), "\n",
-      "Total price records: ", nrow(price_data), "\n",
-      "Performance calculations: ", nrow(performance_data), "\n",
+      "Portfolio symbols: ", nrow(portfolio_data_r()), "\n",
+      "Symbols with price data: ", length(unique(price_data_r()$Symbol)), "\n",
+      "Total price records: ", nrow(price_data_r()), "\n",
+      "Performance calculations: ", nrow(performance_data_r()), "\n",
       "Data loaded: ", format(Sys.time(), "%Y-%m-%d %H:%M:%S")
     )
   })
 
   output$data_source_validation <- renderDT({
-    req(exists("holdings_source_summary"), nrow(holdings_source_summary) > 0)
+    validation_source <- holdings_source_summary_r()
+    req(nrow(validation_source) > 0)
 
-    validation_data <- holdings_source_summary |>
+    validation_data <- validation_source |>
       mutate(
         Latest_Date = as.character(Latest_Date)
       )
