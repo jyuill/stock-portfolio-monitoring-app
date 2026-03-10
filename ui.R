@@ -37,6 +37,10 @@ ui <- dashboardPage(
                                "6 Month" = "6m",
                                "1 Year" = "1y"),
                 selected = "Symbol"),
+    tags$p(
+      textOutput("last_data_refresh_note", inline = TRUE),
+      style = "font-size: 12px; color: #b9e9c9; margin: 8px 6px 0 18px;"
+    ),
     actionButton(
       "refresh_data",
       "Refresh Data",

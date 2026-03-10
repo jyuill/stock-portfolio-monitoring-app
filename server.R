@@ -14,6 +14,15 @@ source('global_data.R')
 
 server <- function(input, output, session) {
   data_version <- reactiveVal(0)
+  last_data_refresh <- reactiveVal({
+    if (exists("data_summary", inherits = TRUE) &&
+        "data_loaded_at" %in% names(data_summary) &&
+        !is.null(data_summary$data_loaded_at)) {
+      as.POSIXct(data_summary$data_loaded_at, tz = Sys.timezone())
+    } else {
+      Sys.time()
+    }
+  })
 
   parse_numeric <- function(x) {
     cleaned <- gsub(",", "", as.character(x))
@@ -105,6 +114,13 @@ server <- function(input, output, session) {
     tryCatch({
       source("global_data.R", local = FALSE)
       data_version(data_version() + 1)
+      if (exists("data_summary", inherits = TRUE) &&
+          "data_loaded_at" %in% names(data_summary) &&
+          !is.null(data_summary$data_loaded_at)) {
+        last_data_refresh(as.POSIXct(data_summary$data_loaded_at, tz = Sys.timezone()))
+      } else {
+        last_data_refresh(Sys.time())
+      }
       showNotification("Data refresh complete.", type = "message", duration = 3)
     }, error = function(e) {
       showNotification(
@@ -113,6 +129,13 @@ server <- function(input, output, session) {
         duration = 8
       )
     })
+  })
+
+  output$last_data_refresh_note <- renderText({
+    paste0(
+      "Data as of:\u00A0\u00A0\u00A0\u00A0",
+      format(last_data_refresh(), "%Y-%m-%d %H:%M:%S %Z")
+    )
   })
 
   observe({
