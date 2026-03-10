@@ -10,6 +10,7 @@ ui <- dashboardPage(
     sidebarMenu(
       menuItem("Portfolio Overview", tabName = "overview", icon = icon("chart-line")),
       menuItem("Performance Analysis", tabName = "performance", icon = icon("table")),
+      menuItem("Portfolio Details", tabName = "details", icon = icon("list")),
       menuItem("Settings", tabName = "settings", icon = icon("cog"))
     ),
     hr(),
@@ -110,7 +111,7 @@ ui <- dashboardPage(
           )
         )
       ),
-      
+
       # Performance Analysis Tab  
       tabItem(tabName = "performance",
         fluidRow(
@@ -140,6 +141,24 @@ ui <- dashboardPage(
               tags$li("6m: 6 month performance"),
               tags$li("1y: 1 year performance")
             )
+          )
+        )
+      ),
+
+      # Portfolio Details Tab
+      tabItem(tabName = "details",
+        fluidRow(
+          box(
+            title = "Sector Allocation by Account", status = "primary", solidHeader = TRUE,
+            width = 12,
+            uiOutput("account_sector_pies_ui")
+          )
+        ),
+        fluidRow(
+          box(
+            title = "Account-Level Holdings Details", status = "info", solidHeader = TRUE,
+            width = 12,
+            DTOutput("portfolio_details_table")
           )
         )
       ),

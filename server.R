@@ -292,6 +292,131 @@ server <- function(input, output, session) {
       )
   })
 
+  portfolio_details_data <- reactive({
+    positions <- converted_positions()
+    if (nrow(positions) == 0) {
+      return(data.frame())
+    }
+
+    details <- positions |>
+      mutate(
+        Average_Cost = Average_Cost_Conv,
+        Current_Price = Current_Price_Conv,
+        `% Gain/Loss` = ifelse(Investment != 0, Gain_Loss / Investment, NA_real_)
+      ) |>
+      select(Account, Symbol, Sector, Average_Cost, Quantity, Current_Price, Value, Gain_Loss, `% Gain/Loss`)
+
+    account_totals <- details |>
+      group_by(Account) |>
+      summarise(Account_Value = sum(Value, na.rm = TRUE), .groups = "drop")
+
+    details |>
+      left_join(account_totals, by = "Account") |>
+      mutate(
+        `% of Account` = ifelse(Account_Value > 0, Value / Account_Value, NA_real_)
+      ) |>
+      select(Account, Symbol, Sector, Average_Cost, Quantity, Current_Price, Value, Gain_Loss, `% Gain/Loss`, `% of Account`) |>
+      rename(`Gain/Loss` = Gain_Loss) |>
+      arrange(Account, desc(Value), Symbol)
+  })
+
+  account_sector_data <- reactive({
+    details <- portfolio_details_data()
+    if (nrow(details) == 0) {
+      return(data.frame())
+    }
+
+    details |>
+      group_by(Account, Sector) |>
+      summarise(Value = sum(Value, na.rm = TRUE), .groups = "drop") |>
+      group_by(Account) |>
+      mutate(
+        Account_Total = sum(Value, na.rm = TRUE),
+        AccountPct = ifelse(Account_Total > 0, Value / Account_Total, 0)
+      ) |>
+      ungroup() |>
+      filter(!is.na(Value), Value > 0)
+  })
+
+  account_plot_id <- function(account_name) {
+    paste0("account_sector_pie_", gsub("[^A-Za-z0-9]+", "_", account_name))
+  }
+
+  output$account_sector_pies_ui <- renderUI({
+    pie_data <- account_sector_data()
+    req(nrow(pie_data) > 0)
+
+    account_list <- sort(unique(pie_data$Account))
+    chart_boxes <- lapply(account_list, function(acct) {
+      box(
+        title = acct,
+        status = "primary",
+        solidHeader = TRUE,
+        width = 4,
+        plotlyOutput(account_plot_id(acct), height = "280px")
+      )
+    })
+
+    do.call(fluidRow, chart_boxes)
+  })
+
+  observe({
+    pie_data <- account_sector_data()
+    req(nrow(pie_data) > 0)
+
+    for (acct in unique(pie_data$Account)) {
+      local({
+        account_name <- acct
+        plot_id <- account_plot_id(account_name)
+        output[[plot_id]] <- renderPlotly({
+          acct_data <- pie_data |>
+            filter(Account == account_name) |>
+            arrange(Sector)
+
+          plot_ly(
+            acct_data,
+            x = ~Sector,
+            y = ~Value,
+            type = "bar",
+            marker = list(color = "#4c78a8"),
+            text = ~paste0(round(AccountPct * 100, 1), "%"),
+            textposition = "outside",
+            hovertemplate = paste0(
+              "%{x}<br>",
+              account_name,
+              " Value: $%{y:,.0f}<br>",
+              "Share: %{text}<extra></extra>"
+            ),
+            showlegend = FALSE
+          ) |>
+            layout(
+              xaxis = list(title = "Sector", categoryorder = "array", categoryarray = acct_data$Sector),
+              yaxis = list(title = "Value"),
+              margin = list(t = 10, r = 10, b = 70, l = 55)
+            )
+        })
+      })
+    }
+  })
+
+  output$portfolio_details_table <- renderDT({
+    data <- portfolio_details_data()
+    req(nrow(data) > 0)
+
+    datatable(
+      data,
+      options = list(
+        pageLength = 50,
+        scrollX = TRUE
+      ),
+      rownames = FALSE
+    ) |>
+      formatCurrency(columns = c("Average_Cost", "Current_Price"), currency = "$", digits = 2) |>
+      formatCurrency(columns = c("Value", "Gain/Loss"), currency = "$", digits = 0) |>
+      formatRound(columns = c("Quantity"), digits = 0) |>
+      formatPercentage(columns = c("% Gain/Loss", "% of Account"), digits = 1)
+  })
+
   account_breakdown <- reactive({
     positions <- converted_positions()
     if (nrow(positions) == 0) {
