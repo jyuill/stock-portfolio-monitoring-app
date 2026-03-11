@@ -145,6 +145,14 @@ server <- function(input, output, session) {
     account_choices <- sort(unique(portfolio_positions_r()$Account))
     account_choices <- account_choices[!is.na(account_choices) & account_choices != ""]
     updateSelectInput(session, "account_filter", choices = c("All", account_choices), selected = "All")
+
+    geo_choices <- sort(unique(portfolio_data_r()$Geo))
+    geo_choices <- geo_choices[!is.na(geo_choices) & geo_choices != ""]
+    updateSelectInput(session, "geo_filter", choices = c("All", geo_choices), selected = "All")
+
+    objective_choices <- sort(unique(portfolio_data_r()$Objective))
+    objective_choices <- objective_choices[!is.na(objective_choices) & objective_choices != ""]
+    updateSelectInput(session, "objective_filter", choices = c("All", objective_choices), selected = "All")
   })
   
   # Render portfolio summary using pre-loaded data
@@ -201,6 +209,22 @@ server <- function(input, output, session) {
       perf_data <- perf_data |>
         filter(Symbol %in% symbols_in_account)
     }
+
+    if (!is.null(input$geo_filter) && input$geo_filter != "All") {
+      symbols_in_geo <- portfolio_data_r() |>
+        filter(Geo == input$geo_filter) |>
+        pull(Symbol)
+      perf_data <- perf_data |>
+        filter(Symbol %in% symbols_in_geo)
+    }
+
+    if (!is.null(input$objective_filter) && input$objective_filter != "All") {
+      symbols_in_objective <- portfolio_data_r() |>
+        filter(Objective == input$objective_filter) |>
+        pull(Symbol)
+      perf_data <- perf_data |>
+        filter(Symbol %in% symbols_in_objective)
+    }
     
     # Sort data
     if (input$sort_by != "Symbol") {
@@ -237,6 +261,16 @@ server <- function(input, output, session) {
         filter(Account == input$account_filter)
     }
 
+    if (!is.null(input$geo_filter) && input$geo_filter != "All") {
+      positions <- positions |>
+        filter(Geo == input$geo_filter)
+    }
+
+    if (!is.null(input$objective_filter) && input$objective_filter != "All") {
+      positions <- positions |>
+        filter(Objective == input$objective_filter)
+    }
+
     positions
   })
 
@@ -250,7 +284,7 @@ server <- function(input, output, session) {
       select(Symbol, Current_Price)
 
     positions |>
-      group_by(Symbol, Sector) |>
+      group_by(Symbol, Sector, Geo, Objective) |>
       summarise(
         Quantity = sum(Quantity, na.rm = TRUE),
         Average_Cost = ifelse(
@@ -498,6 +532,38 @@ server <- function(input, output, session) {
       )
   })
 
+  geo_breakdown <- reactive({
+    symbol_data <- overview_symbol_data()
+    if (nrow(symbol_data) == 0) {
+      return(data.frame())
+    }
+
+    symbol_data |>
+      group_by(Geo) |>
+      summarise(
+        Value = sum(Value, na.rm = TRUE),
+        .groups = "drop"
+      ) |>
+      filter(!is.na(Geo), Geo != "", !is.na(Value), Value > 0) |>
+      arrange(desc(Value))
+  })
+
+  objective_breakdown <- reactive({
+    symbol_data <- overview_symbol_data()
+    if (nrow(symbol_data) == 0) {
+      return(data.frame())
+    }
+
+    symbol_data |>
+      group_by(Objective) |>
+      summarise(
+        Value = sum(Value, na.rm = TRUE),
+        .groups = "drop"
+      ) |>
+      filter(!is.na(Objective), Objective != "", !is.na(Value), Value > 0) |>
+      arrange(desc(Value))
+  })
+
   fmt_currency <- function(x, digits = 0) {
     if (is.na(x)) return("N/A")
     paste0("$", format(round(x, digits), big.mark = ",", scientific = FALSE, trim = TRUE, nsmall = digits))
@@ -569,6 +635,38 @@ server <- function(input, output, session) {
     plot_ly(
       data,
       labels = ~Sector,
+      values = ~Value,
+      type = "pie",
+      hole = 0.55,
+      textinfo = "label+percent",
+      hovertemplate = "%{label}<br>Value: $%{value:,.0f}<br>Share: %{percent}<extra></extra>"
+    ) |>
+      layout(showlegend = FALSE)
+  })
+
+  output$geo_value_donut <- renderPlotly({
+    data <- geo_breakdown()
+    req(nrow(data) > 0)
+
+    plot_ly(
+      data,
+      labels = ~Geo,
+      values = ~Value,
+      type = "pie",
+      hole = 0.55,
+      textinfo = "label+percent",
+      hovertemplate = "%{label}<br>Value: $%{value:,.0f}<br>Share: %{percent}<extra></extra>"
+    ) |>
+      layout(showlegend = FALSE)
+  })
+
+  output$objective_value_donut <- renderPlotly({
+    data <- objective_breakdown()
+    req(nrow(data) > 0)
+
+    plot_ly(
+      data,
+      labels = ~Objective,
       values = ~Value,
       type = "pie",
       hole = 0.55,

@@ -24,6 +24,12 @@ ui <- dashboardPage(
     selectInput("account_filter", "Account:",
                 choices = c("All"),
                 selected = "All"),
+    selectInput("geo_filter", "Geo:",
+                choices = c("All"),
+                selected = "All"),
+    selectInput("objective_filter", "Objective:",
+                choices = c("All"),
+                selected = "All"),
     radioButtons("currency_view", "Currency View",
                  choices = c("Native (as sourced)" = "native",
                              "CAD (convert USD)" = "cad"),
@@ -83,6 +89,14 @@ ui <- dashboardPage(
         
         fluidRow(
           box(
+            title = "Account Value vs Gain/Loss", status = "warning", solidHeader = TRUE,
+            width = 12,
+            plotlyOutput("account_value_gain_bar", height = "320px")
+          )
+        ),
+
+        fluidRow(
+          box(
             title = "Portfolio Value by Account", status = "primary", solidHeader = TRUE,
             width = 6,
             plotlyOutput("account_value_donut", height = "320px")
@@ -96,9 +110,14 @@ ui <- dashboardPage(
 
         fluidRow(
           box(
-            title = "Account Value vs Gain/Loss", status = "warning", solidHeader = TRUE,
-            width = 12,
-            plotlyOutput("account_value_gain_bar", height = "320px")
+            title = "Portfolio Value by Geo", status = "info", solidHeader = TRUE,
+            width = 6,
+            plotlyOutput("geo_value_donut", height = "320px")
+          ),
+          box(
+            title = "Portfolio Value by Objective", status = "info", solidHeader = TRUE,
+            width = 6,
+            plotlyOutput("objective_value_donut", height = "320px")
           )
         ),
 

@@ -95,7 +95,7 @@ portfolio_data <- tryCatch({
   }
 
   load_holdings_meta <- function() {
-    meta_cfg <- list(name = "Holdings meta", range = "B8:F100")
+    meta_cfg <- list(name = "Holdings meta", range = "B8:H100")
     cat("Loading holdings metadata from", meta_cfg$name, "(", meta_cfg$range, ")\n")
 
     raw_meta <- read_sheet(
@@ -114,6 +114,8 @@ portfolio_data <- tryCatch({
         Cost_Currency = character(),
         Price_Currency = character(),
         Manual_Price = numeric(),
+        Geo = character(),
+        Objective = character(),
         stringsAsFactors = FALSE
       ))
     }
@@ -123,18 +125,22 @@ portfolio_data <- tryCatch({
     sector_col <- find_column_name(raw_meta, "sector")
     currency_col <- find_column_name(raw_meta, "currency")
     manual_price_col <- find_column_name(raw_meta, "manualprice")
+    geo_col <- find_column_name(raw_meta, "geo")
+    objective_col <- find_column_name(raw_meta, "objective")
 
     if (is.na(source_col)) {
       stop("Holdings meta sheet is missing required column: source_symbol")
     }
 
-    selected_cols <- c(source_col, yahoo_col, sector_col, currency_col, manual_price_col)
+    selected_cols <- c(source_col, yahoo_col, sector_col, currency_col, manual_price_col, geo_col, objective_col)
     selected_cols <- selected_cols[!is.na(selected_cols)]
     rename_map <- c(Source_Symbol = source_col)
     if (!is.na(yahoo_col)) rename_map <- c(rename_map, Yahoo_Symbol = yahoo_col)
     if (!is.na(sector_col)) rename_map <- c(rename_map, Sector = sector_col)
     if (!is.na(currency_col)) rename_map <- c(rename_map, Currency = currency_col)
     if (!is.na(manual_price_col)) rename_map <- c(rename_map, Manual_Price = manual_price_col)
+    if (!is.na(geo_col)) rename_map <- c(rename_map, Geo = geo_col)
+    if (!is.na(objective_col)) rename_map <- c(rename_map, Objective = objective_col)
 
     meta <- raw_meta |>
       select(any_of(selected_cols)) |>
@@ -151,6 +157,12 @@ portfolio_data <- tryCatch({
     }
     if (!"Manual_Price" %in% names(meta)) {
       meta$Manual_Price <- NA_real_
+    }
+    if (!"Geo" %in% names(meta)) {
+      meta$Geo <- NA_character_
+    }
+    if (!"Objective" %in% names(meta)) {
+      meta$Objective <- NA_character_
     }
 
     normalize_currency <- function(x) {
@@ -209,13 +221,17 @@ portfolio_data <- tryCatch({
         Yahoo_Symbol = str_trim(str_to_upper(as.character(Yahoo_Symbol))),
         Sector = str_trim(as.character(Sector)),
         Currency = str_trim(str_to_upper(as.character(Currency))),
-        Manual_Price = parse_meta_numeric(Manual_Price)
+        Manual_Price = parse_meta_numeric(Manual_Price),
+        Geo = str_trim(str_to_upper(as.character(Geo))),
+        Objective = str_trim(as.character(Objective))
       ) |>
       filter(!is.na(Source_Symbol), Source_Symbol != "") |>
       mutate(
         Yahoo_Symbol = ifelse(Yahoo_Symbol == "", NA_character_, Yahoo_Symbol),
         Sector = ifelse(Sector == "", NA_character_, Sector),
-        Currency = ifelse(Currency == "", NA_character_, Currency)
+        Currency = ifelse(Currency == "", NA_character_, Currency),
+        Geo = ifelse(Geo == "", NA_character_, Geo),
+        Objective = ifelse(Objective == "", NA_character_, Objective)
       ) |>
       rowwise() |>
       mutate(
@@ -244,6 +260,14 @@ portfolio_data <- tryCatch({
         Manual_Price = {
           vals <- na.omit(Manual_Price)
           if (length(vals) > 0) vals[1] else NA_real_
+        },
+        Geo = {
+          vals <- na.omit(Geo)
+          if (length(vals) > 0) vals[1] else NA_character_
+        },
+        Objective = {
+          vals <- na.omit(Objective)
+          if (length(vals) > 0) vals[1] else NA_character_
         },
         .groups = "drop"
       )
@@ -376,7 +400,7 @@ portfolio_data <- tryCatch({
   }
   cat("Combined holdings rows across sources:", nrow(combined_holdings), "\n")
 
-  portfolio_positions <- combined_holdings |>
+  raw_positions <- combined_holdings |>
     group_by(Symbol, Account) |>
     summarise(
       Quantity = sum(Quantity, na.rm = TRUE),
@@ -396,9 +420,31 @@ portfolio_data <- tryCatch({
       Cost_Currency = coalesce(Cost_Currency, "CAD"),
       Price_Currency = coalesce(Price_Currency, "CAD"),
       Manual_Price = as.numeric(Manual_Price),
+      Geo = ifelse(is.na(Geo) | Geo == "", "Unspecified", Geo),
+      Objective = ifelse(is.na(Objective) | Objective == "", "Unspecified", Objective),
       Average_Cost = round(Average_Cost, 4)
-    ) |>
+    )
+
+  excluded_symbols <- raw_positions |>
+    filter(!is.na(Manual_Price), Manual_Price == 0) |>
+    distinct(Symbol) |>
+    pull(Symbol)
+
+  if (length(excluded_symbols) > 0) {
+    cat(
+      "  - Excluding symbols with Manual_Price = 0:",
+      paste(excluded_symbols, collapse = ", "),
+      "\n"
+    )
+  }
+
+  portfolio_positions <- raw_positions |>
+    filter(is.na(Manual_Price) | Manual_Price != 0) |>
     arrange(Symbol, Account)
+
+  if (nrow(portfolio_positions) == 0) {
+    stop("All holdings were excluded (manual price set to 0).")
+  }
 
   portfolio <- portfolio_positions |>
     group_by(Symbol) |>
@@ -417,6 +463,8 @@ portfolio_data <- tryCatch({
       Cost_Currency = first(Cost_Currency),
       Price_Currency = first(Price_Currency),
       Manual_Price = first(Manual_Price),
+      Geo = first(Geo),
+      Objective = first(Objective),
       .groups = "drop"
     ) |>
     mutate(Average_Cost = round(Average_Cost, 4)) |>
