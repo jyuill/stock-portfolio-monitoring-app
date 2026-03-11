@@ -11,6 +11,7 @@ ui <- dashboardPage(
       menuItem("Portfolio Overview", tabName = "overview", icon = icon("chart-line")),
       menuItem("Performance Analysis", tabName = "performance", icon = icon("table")),
       menuItem("Portfolio Details", tabName = "details", icon = icon("list")),
+      menuItem("Focus Queue", tabName = "focus", icon = icon("triangle-exclamation")),
       menuItem("Settings", tabName = "settings", icon = icon("cog"))
     ),
     hr(),
@@ -33,7 +34,7 @@ ui <- dashboardPage(
     radioButtons("currency_view", "Currency View",
                  choices = c("Native (as sourced)" = "native",
                              "CAD (convert USD)" = "cad"),
-                 selected = "native"),
+                 selected = "cad"),
     selectInput("sort_by", "Sort by:",
                 choices = list("Symbol" = "Symbol",
                                "1 Day" = "1d",
@@ -182,6 +183,31 @@ ui <- dashboardPage(
             title = "Account-Level Holdings Details", status = "info", solidHeader = TRUE,
             width = 12,
             DTOutput("portfolio_details_table")
+          )
+        )
+      ),
+
+      # Focus Queue Tab
+      tabItem(tabName = "focus",
+        fluidRow(
+          box(
+            title = "Gain/Loss Contribution by Asset", status = "primary", solidHeader = TRUE,
+            width = 12,
+            plotlyOutput("contribution_bar", height = "420px")
+          )
+        ),
+        fluidRow(
+          box(
+            title = "Needs Attention", status = "danger", solidHeader = TRUE,
+            width = 12,
+            DTOutput("attention_queue_table")
+          )
+        ),
+        fluidRow(
+          box(
+            title = "Lower Priority / Monitor", status = "success", solidHeader = TRUE,
+            width = 12,
+            DTOutput("monitor_queue_table")
           )
         )
       ),

@@ -133,7 +133,7 @@ server <- function(input, output, session) {
 
   output$last_data_refresh_note <- renderText({
     paste0(
-      "Data as of:\u00A0\u00A0\u00A0\u00A0",
+      "Data as of:\u00A0\u00A0\u00A0",
       format(last_data_refresh(), "%Y-%m-%d %H:%M:%S %Z")
     )
   })
@@ -846,10 +846,169 @@ server <- function(input, output, session) {
       formatPercentage(columns = c("1d", "7d", "30d", "90d", "6m", "1y"), digits = 1) |>
       formatStyle(columns = c("% Gain/Loss"),
                   backgroundColor = styleInterval(cuts = c(-0.05, 0, 0.05),
-                                                values = c("#ffcccc", "#ffffcc", "#ccffcc", "#ccffff"))) |>
+                                                values = c("#ffcccc", "#ffffcc", "#ccffff", "#ccffcc"))) |>
       formatStyle(columns = c("1d", "7d", "30d", "90d", "6m", "1y"),
                   backgroundColor = styleInterval(cuts = c(-0.05, 0, 0.05),
-                                                values = c("#ffcccc", "#ffffcc", "#ccffcc", "#ccffff")))
+                                                values = c("#ffcccc", "#ffffcc", "#ccffff", "#ccffcc")))
+  })
+
+  action_queue_data <- reactive({
+    table_data <- performance_table_data()
+    req(nrow(table_data) > 0)
+
+    abs_gain <- abs(table_data$`Gain/Loss`)
+    contribution_threshold <- if (all(is.na(abs_gain))) {
+      Inf
+    } else {
+      as.numeric(stats::quantile(abs_gain, probs = 0.75, na.rm = TRUE))
+    }
+
+    table_data |>
+      mutate(
+        PortfolioPctNum = as.numeric(`Portfolio%`),
+        GainLossPctNum = as.numeric(`% Gain/Loss`) * 100,
+        Return7dNum = as.numeric(`7d`),
+        ContributionFlag = abs(`Gain/Loss`) >= contribution_threshold,
+        DrawdownFlag = !is.na(GainLossPctNum) & GainLossPctNum <= -10 & PortfolioPctNum >= 2,
+        RecentDropFlag = !is.na(Return7dNum) & Return7dNum <= -5 & PortfolioPctNum >= 1,
+        OversizedFlag = !is.na(PortfolioPctNum) & PortfolioPctNum >= 12,
+        AttentionScore =
+          as.integer(DrawdownFlag) * 2L +
+          as.integer(OversizedFlag) * 2L +
+          as.integer(RecentDropFlag) * 1L +
+          as.integer(ContributionFlag) * 1L
+      ) |>
+      rowwise() |>
+      mutate(
+        AttentionReason = paste(
+          na.omit(c(
+            if (DrawdownFlag) "Material drawdown" else NA_character_,
+            if (OversizedFlag) "Oversized position" else NA_character_,
+            if (RecentDropFlag) "7d decline" else NA_character_,
+            if (ContributionFlag) "Large P/L contributor" else NA_character_
+          )),
+          collapse = "; "
+        )
+      ) |>
+      ungroup() |>
+      mutate(
+        AttentionReason = ifelse(
+          AttentionReason == "" | is.na(AttentionReason),
+          "No critical flags",
+          AttentionReason
+        )
+      ) |>
+      select(
+        Symbol, Sector, Accounts, Value, `Gain/Loss`, `% Gain/Loss`, `Portfolio%`, `7d`, `30d`, AttentionScore, AttentionReason
+      ) |>
+      arrange(desc(AttentionScore), desc(abs(`Gain/Loss`)))
+  })
+
+  output$contribution_bar <- renderPlotly({
+    q_data <- action_queue_data() |>
+      mutate(
+        Contribution = `Gain/Loss`
+      ) |>
+      arrange(desc(abs(Contribution))) |>
+      head(20) |>
+      mutate(
+        SymbolOrder = reorder(Symbol, Contribution),
+        BarColor = ifelse(Contribution >= 0, "#1a9850", "#d73027"),
+        HoverText = paste0(
+          Symbol,
+          "<br>Contribution: $",
+          format(round(Contribution, 0), big.mark = ",", scientific = FALSE),
+          "<br>Portfolio: ",
+          round(`Portfolio%`, 1),
+          "%",
+          "<br>7d: ",
+          round(`7d`, 1),
+          "%",
+          "<br>30d: ",
+          round(`30d`, 1),
+          "%"
+        )
+      )
+    req(nrow(q_data) > 0)
+
+    plot_ly(
+      q_data,
+      x = ~Contribution,
+      y = ~SymbolOrder,
+      type = "bar",
+      orientation = "h",
+      marker = list(color = q_data$BarColor),
+      text = ~paste0("$", format(round(Contribution, 0), big.mark = ",", scientific = FALSE)),
+      hovertext = ~HoverText,
+      hoverinfo = "text",
+      hovertemplate = paste0(
+        "%{hovertext}<extra></extra>"
+      ),
+      showlegend = FALSE
+    ) |>
+      layout(
+        xaxis = list(title = "Gain/Loss Contribution"),
+        yaxis = list(title = ""),
+        margin = list(l = 90, r = 20, t = 20, b = 50)
+      )
+  })
+
+  output$attention_queue_table <- renderDT({
+    data <- action_queue_data() |>
+      filter(AttentionScore >= 2)
+
+    if (nrow(data) == 0) {
+      data <- data.frame(
+        Note = "No high-priority flags for current filters.",
+        stringsAsFactors = FALSE
+      )
+      return(datatable(data, options = list(dom = "t"), rownames = FALSE))
+    }
+
+    data <- data |>
+      mutate(
+        `Portfolio%` = `Portfolio%` / 100,
+        `7d` = `7d` / 100,
+        `30d` = `30d` / 100
+      )
+
+    datatable(
+      data,
+      options = list(pageLength = 15, scrollX = TRUE),
+      rownames = FALSE
+    ) |>
+      formatCurrency(columns = c("Value", "Gain/Loss"), currency = "$", digits = 0) |>
+      formatPercentage(columns = c("% Gain/Loss"), digits = 0) |>
+      formatPercentage(columns = c("Portfolio%", "7d", "30d"), digits = 1)
+  })
+
+  output$monitor_queue_table <- renderDT({
+    data <- action_queue_data() |>
+      filter(AttentionScore < 2)
+
+    if (nrow(data) == 0) {
+      data <- data.frame(
+        Note = "All current holdings are flagged as high-priority.",
+        stringsAsFactors = FALSE
+      )
+      return(datatable(data, options = list(dom = "t"), rownames = FALSE))
+    }
+
+    data <- data |>
+      mutate(
+        `Portfolio%` = `Portfolio%` / 100,
+        `7d` = `7d` / 100,
+        `30d` = `30d` / 100
+      )
+
+    datatable(
+      data,
+      options = list(pageLength = 20, scrollX = TRUE),
+      rownames = FALSE
+    ) |>
+      formatCurrency(columns = c("Value", "Gain/Loss"), currency = "$", digits = 0) |>
+      formatPercentage(columns = c("% Gain/Loss"), digits = 0) |>
+      formatPercentage(columns = c("Portfolio%", "7d", "30d"), digits = 1)
   })
   
   # Add session statistics output
