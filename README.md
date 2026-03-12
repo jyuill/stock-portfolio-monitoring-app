@@ -17,6 +17,7 @@ A Shiny application for monitoring stock portfolio performance with data sourced
 - shinydashboard  
 - DT
 - plotly
+- shinymanager
 - dplyr
 - ggplot2
 - googlesheets4
@@ -24,6 +25,26 @@ A Shiny application for monitoring stock portfolio performance with data sourced
 - lubridate
 - stringr
 - tidyr
+
+### App Login (shinymanager)
+
+The app now requires login via `shinymanager`.
+
+Set these environment variables in your runtime (e.g., Posit Connect Cloud):
+- `APP_LOGIN_USER` (single username)
+- `APP_LOGIN_PWD_HASH` (hashed password from `sodium::password_store("your-password")`)
+- Optional: `APP_LOGIN_ADMIN` (`true` or `false`)
+
+Alternative (single user): use plain password env var
+- `APP_LOGIN_PWD`
+
+For multiple users:
+- `APP_LOGIN_USERS` (comma-separated usernames)
+- `APP_LOGIN_PWD_HASHES` (comma-separated password hashes, same order)
+- Optional: `APP_LOGIN_ADMINS` (comma-separated booleans, same order)
+
+Alternative (multiple users): plain passwords
+- `APP_LOGIN_PWDS` (comma-separated plaintext passwords, same order as `APP_LOGIN_USERS`)
 
 ### Google Sheets Setup
 

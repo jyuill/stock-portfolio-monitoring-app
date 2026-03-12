@@ -8,11 +8,82 @@ library(quantmod)
 library(lubridate)
 library(stringr)
 library(tidyr)
+library(shinymanager)
 
 # Load portfolio data from Google Sheets
 source('global_data.R')
 
+load_auth_credentials <- function() {
+  parse_csv <- function(x) {
+    vals <- trimws(unlist(strsplit(x, ",")))
+    vals[vals != ""]
+  }
+
+  users <- parse_csv(Sys.getenv("APP_LOGIN_USERS", ""))
+  pwd_hashes <- parse_csv(Sys.getenv("APP_LOGIN_PWD_HASHES", ""))
+  pwds_plain <- parse_csv(Sys.getenv("APP_LOGIN_PWDS", ""))
+  admins <- parse_csv(Sys.getenv("APP_LOGIN_ADMINS", ""))
+
+  if (length(users) == 0 || (length(pwd_hashes) == 0 && length(pwds_plain) == 0)) {
+    user_single <- trimws(Sys.getenv("APP_LOGIN_USER", ""))
+    hash_single <- trimws(Sys.getenv("APP_LOGIN_PWD_HASH", ""))
+    pwd_single <- trimws(Sys.getenv("APP_LOGIN_PWD", ""))
+    admin_single <- tolower(trimws(Sys.getenv("APP_LOGIN_ADMIN", "false")))
+
+    if (nzchar(user_single) && (nzchar(hash_single) || nzchar(pwd_single))) {
+      users <- user_single
+      if (nzchar(hash_single)) {
+        pwd_hashes <- hash_single
+      } else {
+        pwds_plain <- pwd_single
+      }
+      admins <- admin_single
+    }
+  }
+
+  if (length(users) == 0 || (length(pwd_hashes) == 0 && length(pwds_plain) == 0)) {
+    stop(
+      "Missing app login credentials. Set APP_LOGIN_USER + APP_LOGIN_PWD_HASH ",
+      "or APP_LOGIN_USER + APP_LOGIN_PWD ",
+      "(multi-user: APP_LOGIN_USERS + APP_LOGIN_PWD_HASHES or APP_LOGIN_PWDS)."
+    )
+  }
+
+  if (length(pwd_hashes) > 0 && length(pwds_plain) > 0) {
+    stop("Set either hashed passwords or plain passwords, not both.")
+  }
+
+  if (length(pwds_plain) > 0) {
+    if (length(users) != length(pwds_plain)) {
+      stop("APP_LOGIN_USERS and APP_LOGIN_PWDS must contain the same number of entries.")
+    }
+    pwd_hashes <- vapply(pwds_plain, sodium::password_store, FUN.VALUE = character(1))
+  } else if (length(users) != length(pwd_hashes)) {
+    stop("APP_LOGIN_USERS and APP_LOGIN_PWD_HASHES must contain the same number of entries.")
+  }
+
+  if (length(admins) == 0) {
+    admins <- rep("false", length(users))
+  } else if (length(admins) != length(users)) {
+    stop("APP_LOGIN_ADMINS must be empty or match the number of APP_LOGIN_USERS.")
+  }
+
+  admins_bool <- tolower(admins) %in% c("true", "1", "yes", "y")
+
+  data.frame(
+    user = users,
+    password = pwd_hashes,
+    admin = admins_bool,
+    stringsAsFactors = FALSE
+  )
+}
+
 server <- function(input, output, session) {
+  credentials <- load_auth_credentials()
+  secure_server(
+    check_credentials = check_credentials(credentials)
+  )
+
   data_version <- reactiveVal(0)
   last_data_refresh <- reactiveVal({
     if (exists("data_summary", inherits = TRUE) &&

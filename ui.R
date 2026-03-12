@@ -2,6 +2,7 @@ library(shiny)
 library(shinydashboard)
 library(DT)
 library(plotly)
+library(shinymanager)
 
 ui <- dashboardPage(
   dashboardHeader(title = "Stock Portfolio Monitor"),
@@ -282,3 +283,5 @@ ui <- dashboardPage(
     )
   )
 )
+
+ui <- secure_app(ui, enable_admin = FALSE)

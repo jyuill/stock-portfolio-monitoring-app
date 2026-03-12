@@ -13,6 +13,7 @@ library(quantmod)
 library(lubridate)
 library(stringr)
 library(tidyr)
+library(shinymanager)
 
 cat("=== Loading Stock Portfolio Data ===\n")
 
