@@ -2892,7 +2892,7 @@
   },
   "files": {
     ".Renviron": {
-      "checksum": "6f7649ad3fca13b4b3d776d3d83c7f53"
+      "checksum": "5a016cc75742db83c35579f047945e54"
     },
     "app_setup.R": {
       "checksum": "988f12fa4b720c5e704af0e536450009"
@@ -2904,19 +2904,19 @@
       "checksum": "520a9854f2350ffc22cae39f0ffeceff"
     },
     "creds/set_pwd.R": {
-      "checksum": "063ca390e4779203617db13c2b97b420"
+      "checksum": "dc2ce22cadee8042f781f1f0743c58a8"
     },
     "global_data.R": {
-      "checksum": "2289caeecbac55dfd1fff51390072b94"
+      "checksum": "353383fa9f2597bd7eef525b0f6a0eec"
     },
     "README.md": {
       "checksum": "ccbb5b993736313c60b6a33f024dfa63"
     },
     "server.R": {
-      "checksum": "fa4529fa014ec3e08a02df2352806862"
+      "checksum": "d96c205af05ad549b832e8a513323b85"
     },
     "ui.R": {
-      "checksum": "3276cc9963f24a148a558deda14d58ef"
+      "checksum": "6a0b6fc9c77d801f49c35a12a898c72e"
     },
     "www/custom.css": {
       "checksum": "a0f7ee1d4df493cd6d0f2c7a029d7c37"
