@@ -14,6 +14,7 @@ library(lubridate)
 library(stringr)
 library(tidyr)
 library(shinymanager)
+library(sodium)
 
 cat("=== Loading Stock Portfolio Data ===\n")
 

@@ -3,6 +3,7 @@ library(shinydashboard)
 library(DT)
 library(plotly)
 library(shinymanager)
+library(sodium)
 
 ui <- dashboardPage(
   dashboardHeader(title = "Stock Portfolio Monitor"),

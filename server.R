@@ -9,6 +9,7 @@ library(lubridate)
 library(stringr)
 library(tidyr)
 library(shinymanager)
+library(sodium)
 
 # Load portfolio data from Google Sheets
 source('global_data.R')
