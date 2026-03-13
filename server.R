@@ -53,13 +53,18 @@ load_auth_credentials <- function() {
     stop("Set either hashed passwords or plain passwords, not both.")
   }
 
+  hash_type <- NULL
   if (length(pwds_plain) > 0) {
     if (length(users) != length(pwds_plain)) {
       stop("APP_LOGIN_USERS and APP_LOGIN_PWDS must contain the same number of entries.")
     }
-    pwd_hashes <- vapply(pwds_plain, sodium::password_store, FUN.VALUE = character(1))
+    passwords <- pwds_plain
+    hash_type <- rep("plain", length(users))
   } else if (length(users) != length(pwd_hashes)) {
     stop("APP_LOGIN_USERS and APP_LOGIN_PWD_HASHES must contain the same number of entries.")
+  } else {
+    passwords <- pwd_hashes
+    hash_type <- rep("sodium", length(users))
   }
 
   if (length(admins) == 0) {
@@ -72,16 +77,45 @@ load_auth_credentials <- function() {
 
   data.frame(
     user = users,
-    password = pwd_hashes,
+    password = passwords,
+    hash_type = hash_type,
     admin = admins_bool,
     stringsAsFactors = FALSE
   )
 }
 
+make_auth_checker <- function(credentials_df) {
+  function(user, password) {
+    credentials_df <- as.data.frame(credentials_df, stringsAsFactors = FALSE)
+    if (!user %in% credentials_df$user) {
+      return(list(result = FALSE, expired = FALSE, authorized = FALSE, user_info = NULL))
+    }
+
+    row <- credentials_df[credentials_df$user == user, , drop = FALSE][1, , drop = FALSE]
+    hash_type <- row$hash_type
+    stored_password <- row$password
+
+    good_password <- FALSE
+    if (identical(hash_type, "plain")) {
+      good_password <- isTRUE(identical(stored_password, password))
+    } else if (identical(hash_type, "sodium")) {
+      good_password <- isTRUE(sodium::password_verify(stored_password, password))
+    }
+
+    user_info <- row[, setdiff(names(row), c("password", "hash_type")), drop = FALSE]
+
+    if (good_password) {
+      list(result = TRUE, expired = FALSE, authorized = TRUE, user_info = user_info)
+    } else {
+      list(result = FALSE, expired = FALSE, authorized = TRUE, user_info = user_info)
+    }
+  }
+}
+
 server <- function(input, output, session) {
   credentials <- load_auth_credentials()
   secure_server(
-    check_credentials = check_credentials(credentials)
+    check_credentials = make_auth_checker(credentials)
   )
 
   data_version <- reactiveVal(0)
@@ -297,10 +331,12 @@ server <- function(input, output, session) {
         filter(Symbol %in% symbols_in_objective)
     }
     
-    # Sort data
-    if (input$sort_by != "Symbol") {
+    # Sort data (input$sort_by can be NULL before UI inputs initialize)
+    sort_by <- input$sort_by
+    if (!is.null(sort_by) && length(sort_by) > 0 && nzchar(sort_by) &&
+        sort_by != "Symbol" && sort_by %in% names(perf_data)) {
       perf_data <- perf_data |>
-        arrange(desc(get(input$sort_by)))
+        arrange(desc(.data[[sort_by]]))
     } else {
       perf_data <- perf_data |>
         arrange(Symbol)

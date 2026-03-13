@@ -46,6 +46,11 @@ For multiple users:
 Alternative (multiple users): plain passwords
 - `APP_LOGIN_PWDS` (comma-separated plaintext passwords, same order as `APP_LOGIN_USERS`)
 
+Notes:
+- You can use either plain passwords (`APP_LOGIN_PWD` / `APP_LOGIN_PWDS`) or sodium hashes (`APP_LOGIN_PWD_HASH` / `APP_LOGIN_PWD_HASHES`), but not both at once.
+- No SQLite setup is required for this auth flow.
+- The login form includes a built-in "Show password" checkbox for typo checking.
+
 ### Google Sheets Setup
 
 1. **Service Account Credentials**:

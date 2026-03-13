@@ -284,4 +284,49 @@ ui <- dashboardPage(
   )
 )
 
-ui <- secure_app(ui, enable_admin = FALSE)
+auth_head <- tags$script(HTML("
+  $(document).on('shiny:connected', function() {
+    if (window.__authShowPasswordInit) return;
+    window.__authShowPasswordInit = true;
+
+    function ensureShowPasswordToggle() {
+      var $passwordInput = $('input[data-auth-password=\"1\"], input[type=\"password\"]').first();
+      if (!$passwordInput.length) return;
+
+      $passwordInput.attr('data-auth-password', '1');
+
+      if ($('#auth-caps-warning').length === 0) {
+        var $capsWarning = $('<div id=\"auth-caps-warning\" style=\"display: none; margin-top: 6px; color: #b22222; font-size: 12px;\">Caps Lock is on</div>');
+        $passwordInput.parent().append($capsWarning);
+      }
+
+      if ($('#auth-show-password-wrap').length === 0) {
+        var $wrap = $('<div id=\"auth-show-password-wrap\" style=\"margin-top: 8px;\"></div>');
+        var $label = $('<label style=\"font-weight: 400; font-size: 13px; cursor: pointer; margin: 0;\"></label>');
+        var $checkbox = $('<input id=\"auth-show-password\" type=\"checkbox\" style=\"margin-right: 6px; vertical-align: middle;\">');
+        $label.append($checkbox).append('Show password');
+        $wrap.append($label);
+        $passwordInput.parent().append($wrap);
+      }
+    }
+
+    ensureShowPasswordToggle();
+    setInterval(ensureShowPasswordToggle, 1000);
+
+    $(document).on('change', '#auth-show-password', function() {
+      var show = $(this).is(':checked');
+      $('input[data-auth-password=\"1\"]').attr('type', show ? 'text' : 'password');
+    });
+
+    $(document).on('keyup keydown', 'input[data-auth-password=\"1\"]', function(e) {
+      var isCapsOn = e.getModifierState && e.getModifierState('CapsLock');
+      $('#auth-caps-warning').toggle(!!isCapsOn);
+    });
+
+    $(document).on('blur', 'input[data-auth-password=\"1\"]', function() {
+      $('#auth-caps-warning').hide();
+    });
+  });
+"))
+
+ui <- secure_app(ui, enable_admin = FALSE, head_auth = auth_head)
