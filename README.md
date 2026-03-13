@@ -30,12 +30,12 @@ A Shiny application for monitoring stock portfolio performance with data sourced
 
 The app now requires login via `shinymanager`.
 
-Set these environment variables in your runtime (e.g., Posit Connect Cloud):
-- `APP_LOGIN_USER` (single username)
-- `APP_LOGIN_PWD_HASH` (hashed password from `sodium::password_store("your-password")`)
+Set these environment variables in `.Renviron` for local use, or in your runtime (e.g., Posit Connect Cloud):
+- `APP_LOGIN_USER` (single username - use quotes .Renivron, NOT in Posit Connect Cloud)
+- `APP_LOGIN_PWD_HASH` (hashed password from `sodium::password_store("your-password")`; NO QUOTES)
 - Optional: `APP_LOGIN_ADMIN` (`true` or `false`)
 
-Alternative (single user): use plain password env var
+Alternative - NOT recommended (single user): use plain password env var
 - `APP_LOGIN_PWD`
 
 For multiple users:
