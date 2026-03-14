@@ -2,6 +2,8 @@
 
 A Shiny application for monitoring stock portfolio performance with data sourced from Google Sheets and real-time price feeds.
 
+Run locally OR https://fig4-stock-port-mon.share.connect.posit.cloud/
+
 ## Features
 
 - **Google Sheets Integration**: Automatically loads portfolio data from your TD Holdings sheet
