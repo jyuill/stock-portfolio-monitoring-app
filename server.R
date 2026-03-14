@@ -960,6 +960,253 @@ server <- function(input, output, session) {
                                                 values = c("#ffcccc", "#ffffcc", "#ccffff", "#ccffcc")))
   })
 
+  risk_return_data <- reactive({
+    positions <- filtered_positions()
+    prices <- price_data_r()
+    req(nrow(positions) > 0, nrow(prices) > 0)
+
+    risk_window_days <- c("3m" = 90, "6m" = 180, "1y" = 365, "2y" = 730)
+    selected_window <- input$risk_window
+    window_days <- risk_window_days[[selected_window]]
+    if (is.null(window_days) || is.na(window_days)) {
+      window_days <- 365
+    }
+
+    symbols <- unique(positions$Symbol)
+    symbol_meta <- positions |>
+      group_by(Symbol, Sector, Geo, Objective) |>
+      summarise(
+        Quantity = sum(Quantity, na.rm = TRUE),
+        Accounts = paste(sort(unique(Account)), collapse = ", "),
+        Price_Currency = first(coalesce(Price_Currency, "CAD")),
+        .groups = "drop"
+      )
+
+    latest_prices <- prices |>
+      filter(Symbol %in% symbols) |>
+      arrange(Symbol, Date) |>
+      group_by(Symbol) |>
+      slice_tail(n = 1) |>
+      ungroup() |>
+      transmute(
+        Symbol = Symbol,
+        Current_Price = as.numeric(Price)
+      )
+
+    symbol_values <- symbol_meta |>
+      left_join(latest_prices, by = "Symbol") |>
+      mutate(
+        fx_usdcad = get_usdcad_rate(),
+        Current_Price_Conv = if (target_currency() == "CAD") {
+          convert_amount(Current_Price, Price_Currency, "CAD", fx_usdcad)
+        } else {
+          Current_Price
+        },
+        Value = Current_Price_Conv * Quantity
+      ) |>
+      select(-fx_usdcad)
+
+    window_start <- Sys.Date() - window_days
+    risk_metrics <- prices |>
+      filter(Symbol %in% symbols, Date >= window_start) |>
+      arrange(Symbol, Date) |>
+      group_by(Symbol) |>
+      mutate(Daily_Return = (Price / lag(Price)) - 1) |>
+      summarise(
+        Trading_Days = sum(!is.na(Daily_Return)),
+        Price_Start = first(Price),
+        Price_End = last(Price),
+        Return_Window = ifelse(
+          !is.na(Price_Start[1]) && Price_Start[1] != 0,
+          ((Price_End[1] - Price_Start[1]) / Price_Start[1]) * 100,
+          NA_real_
+        ),
+        Volatility_1y = ifelse(
+          Trading_Days >= 2,
+          stats::sd(Daily_Return, na.rm = TRUE) * sqrt(252) * 100,
+          NA_real_
+        ),
+        .groups = "drop"
+      ) |>
+      select(Symbol, Trading_Days, Return_Window, Volatility_1y)
+
+    risk_data <- symbol_values |>
+      left_join(risk_metrics, by = "Symbol") |>
+      mutate(
+        Return_1y = as.numeric(Return_Window),
+        Value = as.numeric(Value),
+        Sharpe_1y = ifelse(
+          !is.na(Return_1y) & !is.na(Volatility_1y) & Volatility_1y > 0,
+          Return_1y / Volatility_1y,
+          NA_real_
+        )
+      ) |>
+      filter(!is.na(Return_1y), !is.na(Volatility_1y), !is.na(Value), Value > 0) |>
+      arrange(desc(Value))
+
+    val_scale <- sqrt(risk_data$Value)
+    scale_min <- min(val_scale, na.rm = TRUE)
+    scale_max <- max(val_scale, na.rm = TRUE)
+    if (isTRUE(all.equal(scale_min, scale_max))) {
+      risk_data$Marker_Size <- rep(28, nrow(risk_data))
+    } else {
+      risk_data$Marker_Size <- 12 + ((val_scale - scale_min) / (scale_max - scale_min)) * 34
+    }
+
+    risk_data
+  })
+
+  output$risk_return_bubble <- renderPlotly({
+    data <- risk_return_data()
+    req(nrow(data) > 0)
+
+    currency_label <- if (target_currency() == "CAD") "CAD" else "Native"
+
+    plot_ly(
+      data = data,
+      x = ~Return_1y,
+      y = ~Volatility_1y,
+      type = "scatter",
+      mode = "markers",
+      color = ~Sector,
+      colors = "Set2",
+      text = ~paste0(
+        "<b>", Symbol, "</b>",
+        "<br>Sector: ", Sector,
+        "<br>Accounts: ", Accounts,
+        "<br>Window Return: ", round(Return_1y, 1), "%",
+        "<br>Window Volatility: ", round(Volatility_1y, 1), "%",
+        "<br>Sharpe: ", round(Sharpe_1y, 2),
+        "<br>Value (", currency_label, "): $", format(round(Value, 0), big.mark = ",", scientific = FALSE),
+        "<br>Trading days: ", Trading_Days
+      ),
+      hoverinfo = "text",
+      marker = list(
+        size = ~Marker_Size,
+        sizemode = "diameter",
+        opacity = 0.65,
+        line = list(width = 1, color = "#FFFFFF")
+      )
+    ) |>
+      layout(
+        template = "none",
+        hovermode = "closest",
+        hoverdistance = 8,
+        xaxis = list(title = "Window Return (%)", zeroline = TRUE, zerolinecolor = "#999999"),
+        yaxis = list(title = "Window Volatility (Annualized %)", zeroline = TRUE, zerolinecolor = "#999999"),
+        legend = list(title = list(text = "Sector"), orientation = "h", y = -0.18),
+        paper_bgcolor = "#FFFFFF",
+        plot_bgcolor = "#FFFFFF",
+        margin = list(l = 70, r = 30, t = 20, b = 80)
+      )
+  })
+
+  risk_correlation_data <- reactive({
+    positions <- filtered_positions()
+    prices <- price_data_r()
+    req(nrow(positions) > 0, nrow(prices) > 0)
+
+    risk_window_days <- c("3m" = 90, "6m" = 180, "1y" = 365, "2y" = 730)
+    selected_window <- input$risk_window
+    window_days <- risk_window_days[[selected_window]]
+    if (is.null(window_days) || is.na(window_days)) {
+      window_days <- 365
+    }
+
+    symbols <- unique(positions$Symbol)
+    window_start <- Sys.Date() - window_days
+
+    returns_long <- prices |>
+      filter(Symbol %in% symbols, Date >= window_start) |>
+      arrange(Symbol, Date) |>
+      group_by(Symbol) |>
+      mutate(Daily_Return = (Price / lag(Price)) - 1) |>
+      ungroup() |>
+      filter(!is.na(Daily_Return)) |>
+      select(Date, Symbol, Daily_Return)
+
+    returns_wide <- returns_long |>
+      pivot_wider(names_from = Symbol, values_from = Daily_Return)
+
+    if (nrow(returns_wide) == 0) {
+      return(NULL)
+    }
+
+    returns_mat <- as.matrix(returns_wide[, setdiff(names(returns_wide), "Date"), drop = FALSE])
+    if (ncol(returns_mat) < 2) {
+      return(NULL)
+    }
+
+    corr_mat <- stats::cor(returns_mat, use = "pairwise.complete.obs")
+    corr_df <- as.data.frame(as.table(corr_mat), stringsAsFactors = FALSE)
+    names(corr_df) <- c("Symbol_X", "Symbol_Y", "Correlation")
+
+    list(
+      corr_matrix = corr_mat,
+      corr_long = corr_df
+    )
+  })
+
+  output$risk_correlation_heatmap <- renderPlotly({
+    corr_data <- risk_correlation_data()
+    validate(need(!is.null(corr_data), "Need at least 2 symbols with sufficient daily price history to compute correlation."))
+
+    corr_df <- corr_data$corr_long
+    symbol_order <- colnames(corr_data$corr_matrix)
+
+    plot_ly(
+      data = corr_df,
+      x = ~factor(Symbol_X, levels = symbol_order),
+      y = ~factor(Symbol_Y, levels = rev(symbol_order)),
+      z = ~Correlation,
+      type = "heatmap",
+      zmin = -1,
+      zmax = 1,
+      colorscale = "RdBu",
+      reversescale = TRUE,
+      colorbar = list(title = "Corr")
+    ) |>
+      layout(
+        template = "none",
+        xaxis = list(title = "", tickangle = -45),
+        yaxis = list(title = ""),
+        paper_bgcolor = "#FFFFFF",
+        plot_bgcolor = "#FFFFFF",
+        margin = list(l = 90, r = 30, t = 20, b = 120)
+      )
+  })
+
+  output$risk_return_table <- renderDT({
+    data <- risk_return_data() |>
+      select(Symbol, Sector, Accounts, Value, Return_1y, Volatility_1y, Sharpe_1y, Trading_Days) |>
+      rename(
+        Return_Period = Return_1y,
+        Volatility_Period = Volatility_1y,
+        Sharpe_Period = Sharpe_1y
+      ) |>
+      mutate(
+        Return_Period = Return_Period / 100,
+        Volatility_Period = Volatility_Period / 100
+      )
+    req(nrow(data) > 0)
+
+    datatable(
+      data,
+      options = list(pageLength = 25, scrollX = TRUE),
+      rownames = FALSE
+    ) |>
+      formatCurrency(columns = c("Value"), currency = "$", digits = 0) |>
+      formatPercentage(columns = c("Return_Period", "Volatility_Period"), digits = 1) |>
+      formatRound(columns = c("Sharpe_Period"), digits = 2) |>
+      formatStyle(
+        columns = c("Sharpe_Period"),
+        backgroundColor = styleInterval(
+          cuts = c(0, 1, 2),
+          values = c("#ffcccc", "#ffffcc", "#ccffff", "#ccffcc")
+        )
+      )
+  })
+
   action_queue_data <- reactive({
     table_data <- performance_table_data()
     req(nrow(table_data) > 0)

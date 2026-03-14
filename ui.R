@@ -14,6 +14,7 @@ ui <- dashboardPage(
       menuItem("Performance Analysis", tabName = "performance", icon = icon("table")),
       menuItem("Portfolio Details", tabName = "details", icon = icon("list")),
       menuItem("Focus Queue", tabName = "focus", icon = icon("triangle-exclamation")),
+      menuItem("Risk vs Return", tabName = "risk_return", icon = icon("bullseye")),
       menuItem("Settings", tabName = "settings", icon = icon("cog"))
     ),
     hr(),
@@ -210,6 +211,53 @@ ui <- dashboardPage(
             title = "Lower Priority / Monitor", status = "success", solidHeader = TRUE,
             width = 12,
             DTOutput("monitor_queue_table")
+          )
+        )
+      ),
+
+      # Risk vs Return Tab
+      tabItem(tabName = "risk_return",
+        fluidRow(
+          box(
+            title = "Risk Analysis Window", status = "info", solidHeader = TRUE,
+            width = 12,
+            selectInput(
+              "risk_window",
+              "Time Window",
+              choices = c(
+                "3 Months" = "3m",
+                "6 Months" = "6m",
+                "1 Year" = "1y",
+                "2 Years" = "2y"
+              ),
+              selected = "1y",
+              width = "220px"
+            )
+          )
+        ),
+        fluidRow(
+          box(
+            title = "Risk vs Return Bubble Chart", status = "primary", solidHeader = TRUE,
+            width = 6,
+            p(
+              "X-axis: return for selected window (%), Y-axis: annualized volatility (%) over selected window, bubble size: current holding value."
+            ),
+            plotlyOutput("risk_return_bubble", height = "560px")
+          ),
+          box(
+            title = "Return Correlation Heatmap", status = "warning", solidHeader = TRUE,
+            width = 6,
+            p(
+              "Daily return correlation over the selected window for symbols in the current filter selection."
+            ),
+            plotlyOutput("risk_correlation_heatmap", height = "560px")
+          )
+        ),
+        fluidRow(
+          box(
+            title = "Risk vs Return Detail Table", status = "info", solidHeader = TRUE,
+            width = 12,
+            DTOutput("risk_return_table")
           )
         )
       ),
