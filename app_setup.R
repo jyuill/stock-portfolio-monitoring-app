@@ -7,7 +7,7 @@
 required_packages <- c(
   "shiny", "shinydashboard", "DT", "plotly", "dplyr", 
   "ggplot2", "googlesheets4", "quantmod", "lubridate", 
-  "stringr", "tidyr", "shinymanager"
+  "stringr", "tidyr", "shinymanager","tidyverse"
 )
 
 # Function to install missing packages
