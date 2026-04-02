@@ -172,12 +172,13 @@ server <- function(input, output, session) {
     from <- str_to_upper(coalesce(from_currency, "CAD"))
     to <- str_to_upper(coalesce(to_currency, "CAD"))
     output <- as.numeric(amount)
+    fx_vec <- rep(as.numeric(fx_usdcad)[1], length(output))
 
     idx_usd_to_cad <- from == "USD" & to == "CAD"
-    output[idx_usd_to_cad] <- output[idx_usd_to_cad] * fx_usdcad
+    output[idx_usd_to_cad] <- output[idx_usd_to_cad] * fx_vec[idx_usd_to_cad]
 
     idx_cad_to_usd <- from == "CAD" & to == "USD"
-    output[idx_cad_to_usd] <- output[idx_cad_to_usd] / fx_usdcad
+    output[idx_cad_to_usd] <- output[idx_cad_to_usd] / fx_vec[idx_cad_to_usd]
 
     output
   }
@@ -185,6 +186,28 @@ server <- function(input, output, session) {
   target_currency <- reactive({
     if (identical(input$currency_view, "cad")) "CAD" else "NATIVE"
   })
+
+  return_period_labels <- list(
+    "1d" = "1 Day",
+    "7d" = "7 Day",
+    "30d" = "30 Day",
+    "90d" = "90 Day",
+    "6m" = "6 Month",
+    "1y" = "1 Year",
+    "total_gain_loss_pct" = "Total Gain/Loss %"
+  )
+
+  heatmap_fill_values <- c("#8b1e1e", "#c73e3e", "#f2b6b6", "#fff6d5", "#c9efc8", "#4db56a", "#0b7d32")
+
+  treemap_colorscale <- list(
+    list(0.00, "#8b1e1e"),
+    list(0.20, "#c73e3e"),
+    list(0.40, "#f2b6b6"),
+    list(0.50, "#fff6d5"),
+    list(0.60, "#c9efc8"),
+    list(0.80, "#4db56a"),
+    list(1.00, "#0b7d32")
+  )
 
   portfolio_data_r <- reactive({
     data_version()
@@ -673,8 +696,19 @@ server <- function(input, output, session) {
   })
 
   fmt_currency <- function(x, digits = 0) {
-    if (is.na(x)) return("N/A")
-    paste0("$", format(round(x, digits), big.mark = ",", scientific = FALSE, trim = TRUE, nsmall = digits))
+    out <- rep("N/A", length(x))
+    valid_idx <- !is.na(x)
+    out[valid_idx] <- paste0(
+      "$",
+      format(
+        round(x[valid_idx], digits),
+        big.mark = ",",
+        scientific = FALSE,
+        trim = TRUE,
+        nsmall = digits
+      )
+    )
+    out
   }
 
   output$overview_total_investment <- renderValueBox({
@@ -926,8 +960,46 @@ server <- function(input, output, session) {
     table_data
   })
 
+  performance_color_config <- reactive({
+    data <- performance_table_data()
+    req(nrow(data) > 0)
+
+    color_values <- c(
+      as.numeric(data$`% Gain/Loss`) * 100,
+      as.numeric(data$`1d`),
+      as.numeric(data$`7d`),
+      as.numeric(data$`30d`),
+      as.numeric(data$`90d`),
+      as.numeric(data$`6m`),
+      as.numeric(data$`1y`)
+    )
+    color_values <- color_values[is.finite(color_values)]
+
+    max_abs_value <- suppressWarnings(max(abs(color_values), na.rm = TRUE))
+    if (!is.finite(max_abs_value) || is.na(max_abs_value) || max_abs_value <= 0) {
+      max_abs_value <- 5
+    }
+
+    color_limit <- max(5, ceiling(max_abs_value))
+    cuts_pct <- c(
+      -color_limit,
+      -color_limit * 0.5,
+      -color_limit * 0.1,
+      0,
+      color_limit * 0.1,
+      color_limit * 0.5
+    )
+
+    list(
+      limit = color_limit,
+      cuts_decimal = cuts_pct / 100,
+      colors = heatmap_fill_values
+    )
+  })
+
   output$performance_table <- renderDT({
     req(performance_table_data())
+    color_config <- performance_color_config()
     table_data <- performance_table_data() |>
       mutate(
         `Portfolio%` = `Portfolio%` / 100,
@@ -953,11 +1025,188 @@ server <- function(input, output, session) {
       formatPercentage(columns = c("% Gain/Loss"), digits = 0) |>
       formatPercentage(columns = c("1d", "7d", "30d", "90d", "6m", "1y"), digits = 1) |>
       formatStyle(columns = c("% Gain/Loss"),
-                  backgroundColor = styleInterval(cuts = c(-0.05, 0, 0.05),
-                                                values = c("#ffcccc", "#ffffcc", "#ccffff", "#ccffcc"))) |>
+                  backgroundColor = styleInterval(
+                    cuts = color_config$cuts_decimal,
+                    values = color_config$colors
+                  )) |>
       formatStyle(columns = c("1d", "7d", "30d", "90d", "6m", "1y"),
-                  backgroundColor = styleInterval(cuts = c(-0.05, 0, 0.05),
-                                                values = c("#ffcccc", "#ffffcc", "#ccffff", "#ccffcc")))
+                  backgroundColor = styleInterval(
+                    cuts = color_config$cuts_decimal,
+                    values = color_config$colors
+                  ))
+  })
+
+  treemap_data <- reactive({
+    data <- performance_table_data()
+    req(nrow(data) > 0)
+
+    metric <- input$treemap_return_period
+    if (is.null(metric) || !nzchar(metric)) {
+      metric <- "30d"
+    }
+    metric_label <- unname(return_period_labels[[metric]])
+    if (is.null(metric_label) || is.na(metric_label)) {
+      metric <- "30d"
+      metric_label <- unname(return_period_labels[[metric]])
+    }
+
+    return_values <- if (identical(metric, "total_gain_loss_pct")) {
+      data$`% Gain/Loss` * 100
+    } else if (metric %in% c("1d", "7d", "30d", "90d", "6m", "1y")) {
+      as.numeric(data[[metric]])
+    } else {
+      as.numeric(data$`30d`)
+    }
+
+    data |>
+      mutate(
+        Sector = coalesce(na_if(trimws(Sector), ""), "Unassigned"),
+        Return_Value = return_values
+      ) |>
+      filter(!is.na(Value), Value > 0) |>
+      group_by(Sector, Symbol) |>
+      summarise(
+        Accounts = paste(sort(unique(Accounts[!is.na(Accounts) & Accounts != ""])), collapse = ", "),
+        Holding_Value = sum(Value, na.rm = TRUE),
+        Return_Value = weighted.mean(Return_Value, w = Value, na.rm = TRUE),
+        .groups = "drop"
+      ) |>
+      group_by(Sector) |>
+      mutate(
+        Return_Value = ifelse(is.nan(Return_Value), NA_real_, Return_Value),
+        Sector_Value = sum(Holding_Value, na.rm = TRUE),
+        Sector_Return = weighted.mean(Return_Value, w = Holding_Value, na.rm = TRUE),
+        Sector_Return = ifelse(is.nan(Sector_Return), NA_real_, Sector_Return),
+        Return_Label = ifelse(is.na(Return_Value), "N/A", paste0(round(Return_Value, 1), "%")),
+        Sector_Return_Label = ifelse(is.na(Sector_Return), "N/A", paste0(round(Sector_Return, 1), "%")),
+        Metric_Label = metric_label
+      ) |>
+      ungroup()
+  })
+
+  output$sector_treemap <- renderPlotly({
+    data <- treemap_data()
+    req(nrow(data) > 0)
+
+    format_treemap_currency <- function(x, digits = 0) {
+      out <- rep("N/A", length(x))
+      valid_idx <- !is.na(x)
+      out[valid_idx] <- paste0(
+        "$",
+        format(
+          round(x[valid_idx], digits),
+          big.mark = ",",
+          scientific = FALSE,
+          trim = TRUE,
+          nsmall = digits
+        )
+      )
+      out
+    }
+
+    metric_label <- unique(data$Metric_Label)
+    metric_label <- metric_label[!is.na(metric_label) & metric_label != ""]
+    if (length(metric_label) == 0) {
+      metric_label <- "Return"
+    } else {
+      metric_label <- metric_label[1]
+    }
+    colorbar_title <- if (identical(metric_label, "Total Gain/Loss %")) {
+      metric_label
+    } else {
+      paste0(metric_label, " (%)")
+    }
+    max_abs_return <- suppressWarnings(max(abs(data$Return_Value), abs(data$Sector_Return), na.rm = TRUE))
+    if (!is.finite(max_abs_return) || is.na(max_abs_return) || max_abs_return <= 0) {
+      max_abs_return <- 5
+    }
+    color_limit <- max(5, ceiling(max_abs_return))
+    total_portfolio_value <- sum(unique(data[, c("Sector", "Sector_Value")])$Sector_Value, na.rm = TRUE)
+
+    sector_nodes <- data |>
+      distinct(Sector, Sector_Value, Sector_Return, Sector_Return_Label, Metric_Label) |>
+      mutate(
+        id = paste0("sector::", Sector),
+        label = Sector,
+        parent = "",
+        value = Sector_Value,
+        color_value = Sector_Return,
+        tile_text = Sector_Return_Label,
+        size_share_label = ifelse(
+          total_portfolio_value > 0,
+          paste0(round((Sector_Value / total_portfolio_value) * 100, 1), "% of total value"),
+          "N/A"
+        ),
+        text = paste0(
+          "<b>", Sector, "</b>",
+          "<br>Total Value: ", format_treemap_currency(Sector_Value, 0),
+          "<br>Tile Size: ", size_share_label,
+          "<br>", Metric_Label, ": ", Sector_Return_Label
+        ),
+        hover_group = Metric_Label
+      )
+
+    holding_nodes <- data |>
+      transmute(
+        id = paste0("holding::", Sector, "::", Symbol),
+        label = Symbol,
+        parent = paste0("sector::", Sector),
+        value = Holding_Value,
+        color_value = Return_Value,
+        tile_text = Return_Label,
+        size_share_label = ifelse(
+          Sector_Value > 0,
+          paste0(round((Holding_Value / Sector_Value) * 100, 1), "% of sector value"),
+          "N/A"
+        ),
+        text = paste0(
+          "<b>", Symbol, "</b>",
+          "<br>Sector: ", Sector,
+          ifelse(Accounts == "", "", paste0("<br>Accounts: ", Accounts)),
+          "<br>Value: ", format_treemap_currency(Holding_Value, 0),
+          "<br>Tile Size: ", size_share_label,
+          "<br>", Metric_Label, ": ", Return_Label
+        ),
+        hover_group = Metric_Label
+      )
+
+    plot_data <- if (isTRUE(input$treemap_sector_only)) {
+      sector_nodes
+    } else {
+      bind_rows(sector_nodes, holding_nodes)
+    }
+    plot_data$color_value[is.na(plot_data$color_value)] <- 0
+
+    plot_ly(
+      data = plot_data,
+      type = "treemap",
+      ids = ~id,
+      labels = ~label,
+      parents = ~parent,
+      values = ~value,
+      branchvalues = "total",
+      text = ~text,
+      customdata = ~tile_text,
+      textinfo = "label+text",
+      texttemplate = "%{label}<br>%{customdata}",
+      hovertemplate = "%{text}<extra></extra>",
+      marker = list(
+        colors = ~color_value,
+        colorscale = treemap_colorscale,
+        cmin = -color_limit,
+        cmax = color_limit,
+        line = list(width = 1, color = "white"),
+        showscale = TRUE,
+        colorbar = list(
+          title = colorbar_title
+        )
+      ),
+      tiling = list(pad = 2)
+    ) |>
+      layout(
+        uniformtext = list(minsize = 11, mode = "hide"),
+        margin = list(t = 20, r = 20, b = 20, l = 20)
+      )
   })
 
   risk_return_data <- reactive({

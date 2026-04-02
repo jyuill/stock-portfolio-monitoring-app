@@ -12,6 +12,7 @@ ui <- dashboardPage(
     sidebarMenu(
       menuItem("Portfolio Overview", tabName = "overview", icon = icon("chart-line")),
       menuItem("Performance Analysis", tabName = "performance", icon = icon("table")),
+      menuItem("Sector Treemap", tabName = "treemap", icon = icon("th-large")),
       menuItem("Portfolio Details", tabName = "details", icon = icon("list")),
       menuItem("Focus Queue", tabName = "focus", icon = icon("triangle-exclamation")),
       menuItem("Risk vs Return", tabName = "risk_return", icon = icon("bullseye")),
@@ -168,6 +169,43 @@ ui <- dashboardPage(
               tags$li("6m: 6 month performance"),
               tags$li("1y: 1 year performance")
             )
+          )
+        )
+      ),
+
+      # Sector Treemap Tab
+      tabItem(tabName = "treemap",
+        fluidRow(
+          box(
+            title = "Treemap Settings", status = "info", solidHeader = TRUE,
+            width = 12,
+            selectInput(
+              "treemap_return_period",
+              "Return Metric",
+              choices = c(
+                "1 Day" = "1d",
+                "7 Day" = "7d",
+                "30 Day" = "30d",
+                "90 Day" = "90d",
+                "6 Month" = "6m",
+                "1 Year" = "1y",
+                "Total Gain/Loss %" = "total_gain_loss_pct"
+              ),
+              selected = "30d",
+              width = "220px"
+            ),
+            checkboxInput(
+              "treemap_sector_only",
+              "Sector summary only",
+              value = FALSE
+            )
+          )
+        ),
+        fluidRow(
+          box(
+            title = "Portfolio Treemap by Sector", status = "primary", solidHeader = TRUE,
+            width = 12,
+            plotlyOutput("sector_treemap", height = "720px")
           )
         )
       ),
