@@ -628,7 +628,8 @@ price_data <- tryCatch({
       price_list[[source_symbol]] <- data.frame(
         Date = Sys.Date(),
         Price = as.numeric(manual_price),
-        Symbol = source_symbol
+        Symbol = source_symbol,
+        Is_Live_Override = FALSE
       )
       successful_symbols <- successful_symbols + 1
       next
@@ -658,26 +659,29 @@ price_data <- tryCatch({
             prices <- data.frame(
               Date = index(price_data_raw),
               Price = as.numeric(price_data_raw[, adj_close_col]),
-              Symbol = source_symbol
+              Symbol = source_symbol,
+              Is_Live_Override = FALSE
             ) |>
               filter(!is.na(Price)) |>
               arrange(Date)
             
             if (nrow(prices) > 0) {
               # Overlay live quote when available:
-              # - during market hours: append today's quote row
-              # - after close: replace same-day row with latest quote if needed
+              # - during market hours: append today's quote row (Is_Live_Override = TRUE)
+              # - after close (same-day): replace existing row price in-place (stays FALSE)
               live_price <- fetch_live_quote_price(variant)
               if (!is.na(live_price) && live_price > 0) {
                 latest_hist_date <- max(prices$Date, na.rm = TRUE)
                 if (Sys.Date() > latest_hist_date) {
                   prices <- bind_rows(
                     prices,
-                    data.frame(Date = Sys.Date(), Price = live_price, Symbol = source_symbol)
+                    data.frame(Date = Sys.Date(), Price = live_price, Symbol = source_symbol,
+                               Is_Live_Override = TRUE)
                   ) |>
                     arrange(Date)
                 } else if (Sys.Date() == latest_hist_date) {
                   prices$Price[nrow(prices)] <- live_price
+                  # Is_Live_Override stays FALSE: this is today's official close updated in-place
                 }
               }
 
@@ -696,6 +700,7 @@ price_data <- tryCatch({
     if (!success) {
       fallback_prices <- fetch_mutual_fund_fallback(source_symbol, average_cost, manual_price)
       if (!is.null(fallback_prices) && nrow(fallback_prices) > 0) {
+        fallback_prices$Is_Live_Override <- FALSE
         price_list[[source_symbol]] <- fallback_prices
         successful_symbols <- successful_symbols + 1
         success <- TRUE
@@ -754,13 +759,38 @@ performance_data <- tryCatch({
       
       for (period_name in names(periods)) {
         historical_price <- NULL
+        effective_current_price <- current_price
 
         if (period_name == "1d") {
-          # 1-day change should use the previous available trading row.
-          if (nrow(symbol_prices) >= 2) {
-            historical_price <- symbol_prices |>
-              head(-1) |>
-              tail(1)
+          # Separate official historical closes from any live-override row appended for today.
+          # A live-override row is added when Sys.Date() > latest historical date, meaning
+          # the market hasn't yet traded today (weekend, holiday, pre-market). In that case
+          # the live quote is just the previous session's close, so comparing it against the
+          # prior row would always yield 0%. Instead we fall back to showing the last
+          # completed session's change (last hist close vs. second-to-last hist close).
+          has_live_col <- "Is_Live_Override" %in% names(symbol_prices)
+          hist_prices  <- if (has_live_col) filter(symbol_prices, !Is_Live_Override) else symbol_prices
+          has_live_row <- has_live_col && any(symbol_prices$Is_Live_Override, na.rm = TRUE)
+
+          if (has_live_row && nrow(hist_prices) >= 1) {
+            last_hist_price <- tail(hist_prices$Price, 1)
+            if (!is.na(current_price) && !is.na(last_hist_price) &&
+                abs(current_price - last_hist_price) < 1e-8) {
+              # Live price equals last historical close: no new trading today.
+              # Show the most recent completed session's change instead.
+              if (nrow(hist_prices) >= 2) {
+                effective_current_price <- last_hist_price
+                historical_price <- hist_prices |> head(-1) |> tail(1)
+              }
+            } else {
+              # Live price differs from last close: market is active today.
+              historical_price <- tail(hist_prices, 1)
+            }
+          } else {
+            # No live-override row: today's official close is already in hist data.
+            if (nrow(hist_prices) >= 2) {
+              historical_price <- hist_prices |> head(-1) |> tail(1)
+            }
           }
         } else {
           days_back <- periods[[period_name]]
@@ -773,7 +803,7 @@ performance_data <- tryCatch({
         }
         
         if (!is.null(historical_price) && nrow(historical_price) > 0) {
-          pct_change <- ((current_price - historical_price$Price) / historical_price$Price) * 100
+          pct_change <- ((effective_current_price - historical_price$Price) / historical_price$Price) * 100
           performance_row[[period_name]] <- round(pct_change, 2)
         } else {
           performance_row[[period_name]] <- NA
