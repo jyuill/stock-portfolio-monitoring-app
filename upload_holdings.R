@@ -25,6 +25,7 @@ suppressPackageStartupMessages({
   library(dplyr)
   library(tidyr)
   library(readr)
+  library(readxl)
   library(stringr)
   library(lubridate)
   library(tibble)
@@ -40,13 +41,14 @@ SHEET_URL <- "https://docs.google.com/spreadsheets/d/1oievySvQ3m2ojs1On27EKpZ4rq
 # so existing filters / joins continue to work.
 # Add a row here as each new broker CSV format is handled.
 HOLDINGS_SOURCES <- tribble(
-  ~file_id,   ~account,                         ~sheet_tab, ~header_row,
-  "20LWH2S",  "TD-RSP",  "TD Holdings",         5
-   , "603978A",  "TD-CDN",          "TD Holdings", 5
-   , "603978B",  "TD-USD",          "TD Holdings", 5
-   , "603978J",  "TD-TFSA",          "TD Holdings", 5
+  ~file_id,              ~account,     ~sheet_tab,        ~header_row, ~file_type, ~excel_sheet,
+  "20LWH2S",             "TD-RSP",     "TD Holdings",     5,           "csv",      NA_character_
+  , "603978A",           "TD-CDN",     "TD Holdings",     5,           "csv",      NA_character_
+  , "603978B",           "TD-USD",     "TD Holdings",     5,           "csv",      NA_character_
+  , "603978J",           "TD-TFSA",    "TD Holdings",     5,           "csv",      NA_character_
+  , "InvestmentSummary", "QUEST-RSP",  "Quest Holdings",  5,           "xlsx",     "Positions"
   # add sources as needed:
-  # , "<file identifier in downloads folder>",  "<account label>",  "<target gsheet tab>"
+  # , "<file identifier>", "<account label>", "<target gsheet tab>", <header_row>, "<csv|xlsx>", "<excel sheet name or NA>"
 )
 
 # ---- Auth (mirrors global_data.R::auth_google_sheets) -----------------------
@@ -145,6 +147,65 @@ parse_holdings_csv <- function(csv_path) {
   )
 }
 
+# ---- Date helpers ----------------------------------------------------------
+
+# Return the most recent weekday (Mon-Fri) strictly before the given date.
+# E.g. Tuesday -> Monday, Monday -> Friday, Saturday -> Friday.
+prev_weekday <- function(d) {
+  d <- as.Date(d)
+  repeat {
+    d <- d - 1L
+    if (lubridate::wday(d, week_start = 1) <= 5L) return(d)
+  }
+}
+
+# ---- Excel discovery --------------------------------------------------------
+
+# Find the most recently modified .xlsx file in downloads_dir whose name
+# contains file_id (case-insensitive).
+find_latest_xlsx <- function(file_id, downloads_dir = "~/Downloads") {
+  dir_norm <- path.expand(downloads_dir)
+  if (!dir.exists(dir_norm)) {
+    stop("Downloads directory not found: ", dir_norm)
+  }
+  files <- list.files(dir_norm, pattern = "\\.xlsx$", full.names = TRUE,
+                      ignore.case = TRUE)
+  files <- files[str_detect(basename(files), fixed(file_id, ignore_case = TRUE))]
+  if (length(files) == 0) {
+    stop("No .xlsx files containing '", file_id, "' in ", dir_norm)
+  }
+  info <- file.info(files)
+  files[order(info$mtime, decreasing = TRUE)][1]
+}
+
+# ---- Excel parsing ----------------------------------------------------------
+
+# Parse an Excel holdings file:
+#   - Reads the specified sheet (defaults to 'Positions' if not supplied).
+#   - As-of date is derived from file creation date (prev weekday).
+#   - Returns same structure as parse_holdings_csv():
+#     list(as_of_date, account_raw = NA, data)
+parse_holdings_xlsx <- function(xlsx_path, sheet = "Positions") {
+  # Derive as-of date: previous weekday before file creation date.
+  finfo     <- file.info(xlsx_path)
+  # Use birth time (ctime on macOS) when available; fall back to mtime.
+  file_date <- if (!is.na(finfo$ctime)) as.Date(finfo$ctime) else as.Date(finfo$mtime)
+  as_of_date <- prev_weekday(file_date)
+
+  data <- suppressMessages(
+    read_excel(xlsx_path, sheet = sheet, .name_repair = "unique")
+  )
+
+  # Drop any fully-empty trailing rows.
+  data <- data |> filter(if_any(everything(), ~ !is.na(.)))
+
+  list(
+    as_of_date  = as_of_date,
+    account_raw = NA_character_,
+    data        = data
+  )
+}
+
 # ---- Target-tab introspection ----------------------------------------------
 
 # Coerce a character vector of sheet-read values into Date. Handles both ISO
@@ -229,10 +290,20 @@ upload_holdings <- function(
   cat("  Account   :", cfg$account, "\n")
   cat("  Sheet tab :", cfg$sheet_tab, "\n")
 
-  csv_path <- find_latest_csv(file_id, downloads_dir)
-  cat("  CSV       :", csv_path, "\n")
+  file_type <- if ("file_type" %in% names(cfg)) cfg$file_type else "csv"
 
-  parsed <- parse_holdings_csv(csv_path)
+  if (file_type == "xlsx") {
+    file_path <- find_latest_xlsx(file_id, downloads_dir)
+    cat("  Excel     :", file_path, "\n")
+    excel_sheet <- if (!is.na(cfg$excel_sheet)) cfg$excel_sheet else "Positions"
+    cat("  Sheet     :", excel_sheet, "\n")
+    parsed <- parse_holdings_xlsx(file_path, sheet = excel_sheet)
+  } else {
+    file_path <- find_latest_csv(file_id, downloads_dir)
+    cat("  CSV       :", file_path, "\n")
+    parsed <- parse_holdings_csv(file_path)
+  }
+
   cat("  As of     :", format(parsed$as_of_date, "%Y-%m-%d"), "\n")
   cat("  Data rows :", nrow(parsed$data), "\n")
 

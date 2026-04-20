@@ -14,10 +14,10 @@ for (i in 1:nrow(HOLDINGS_SOURCES)) {
 
 # individual run for testing
 upload_holdings(
-   file_id = HOLDINGS_SOURCES$file_id[2]
+   file_id = HOLDINGS_SOURCES$file_id[5]
 )
 
-# test individual functions
+# test individual functions, if bugs
 
 file_id <- HOLDINGS_SOURCES$file_id[1]
 downloads_dir <- "~/Downloads"
@@ -31,6 +31,3 @@ empty <- next_empty_row(
   sheet_url = sheet_url,
   tab_name = HOLDINGS_SOURCES$sheet_tab[1]
 )
-
-# problem appears to be with next_empty_row
-# row returned is less than actual
