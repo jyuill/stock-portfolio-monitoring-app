@@ -40,11 +40,11 @@ SHEET_URL <- "https://docs.google.com/spreadsheets/d/1oievySvQ3m2ojs1On27EKpZ4rq
 # so existing filters / joins continue to work.
 # Add a row here as each new broker CSV format is handled.
 HOLDINGS_SOURCES <- tribble(
-  ~file_id,   ~account,                         ~sheet_tab,
-  "20LWH2S",  "TD-RSP",  "TD Holdings"
-   , "603978A",  "TD-CDN",          "TD Holdings"
-   , "603978B",  "TD-USD",          "TD Holdings"
-   , "603978J",  "TD-TFSA",          "TD Holdings"
+  ~file_id,   ~account,                         ~sheet_tab, ~header_row,
+  "20LWH2S",  "TD-RSP",  "TD Holdings",         5
+   , "603978A",  "TD-CDN",          "TD Holdings", 5
+   , "603978B",  "TD-USD",          "TD Holdings", 5
+   , "603978J",  "TD-TFSA",          "TD Holdings", 5
   # add sources as needed:
   # , "<file identifier in downloads folder>",  "<account label>",  "<target gsheet tab>"
 )
@@ -187,20 +187,23 @@ find_existing_snapshot_rows <- function(sheet_url, tab_name, match_date, match_a
 
 # Return the 1-based row number where new data should be written. This is one
 # past the last non-empty row in column C (Symbol) on the target tab.
-next_empty_row <- function(sheet_url, tab_name) {
-  col_c <- read_sheet(
+# THIS DOES NOT WORK WITH C - can be blank symbols
+# try with E - has data in all rows, so next empty row is always last row + 1
+next_empty_row <- function(sheet_url, tab_name, header_row) {
+  col_new_row <- read_sheet(
     sheet_url,
     sheet = tab_name,
-    range = "C:C",
-    col_names = FALSE,
+    range = "E:E",
+    col_names = TRUE,
     col_types = "c"
   )
-  if (nrow(col_c) == 0) {
-    # Tab is entirely empty — start at row 1.
-    return(1L)
+  if (nrow(col_new_row) == 0) {
+    # Tab is empty — start at row determined by header_row.
+    return(header_row + 1L)
   }
-  non_empty <- which(!is.na(col_c[[1]]) & col_c[[1]] != "")
-  if (length(non_empty) == 0) 1L else max(non_empty) + 1L
+  # careful to use col that has no empty values
+  non_empty <- which(!is.na(col_new_row[[1]]) & col_new_row[[1]] != "")
+  if (length(non_empty) == 0) header_row + 1L else max(non_empty) + header_row + 1L
 }
 
 # ---- Main -------------------------------------------------------------------
@@ -212,7 +215,7 @@ upload_holdings <- function(
   dry_run = FALSE
 ) {
   cat("=== Upload holdings: ", file_id, " ===\n", sep = "")
-
+  # get holding source info that matches file_id; error if not exactly one match
   cfg <- HOLDINGS_SOURCES |> filter(.data$file_id == !!file_id)
   if (nrow(cfg) == 0) {
     stop(
@@ -293,7 +296,7 @@ upload_holdings <- function(
     )
   }
 
-  next_row <- next_empty_row(sheet_url, cfg$sheet_tab)
+  next_row <- next_empty_row(sheet_url, cfg$sheet_tab, cfg$header_row)
   write_range <- sprintf("A%d", next_row)
   cat("  Writing to ", cfg$sheet_tab, "!", write_range, "\n", sep = "")
 
