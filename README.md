@@ -11,6 +11,7 @@ Run locally OR https://fig4-stock-port-mon.share.connect.posit.cloud/
 - **Performance Heatmap**: Visual representation of gains/losses across multiple time periods
 - **Multi-Account Support**: Aggregates holdings across different accounts
 - **Interactive Dashboard**: Filter, sort, and analyze your portfolio performance
+- **Automated upload**: files exported/downloaded from broker accounts can be automatically processed and uploaded to Google Sheets.
 
 ## Prerequisites
 
@@ -27,6 +28,8 @@ Run locally OR https://fig4-stock-port-mon.share.connect.posit.cloud/
 - lubridate
 - stringr
 - tidyr
+
+Repo includes R virtual environment (`renv`) with `renv.lock` file that has complete list of packages needed.
 
 ### App Login (shinymanager)
 
@@ -71,12 +74,18 @@ Notes:
      - `Symbol`: Stock ticker symbols
      - `Quantity`: Number of shares held
      - `Average Price`: Cost base for each asset
+3. **upload_holdings.R**: code for automated uploading of broker files to Google Sheets (once manually downloaded from broker website).
 
 ## Installation & Setup
 
 Not sure if all of this still applies, since changes have been made to the app.
 
 1. **Clone or download** the app files to your working directory
+
+2. **Load R environment**: load R virtual environment with code below to get the right packages:
+   ```r
+   renv::restore()
+   ```
 
 2. **Create credentials directory**:
    ```r
@@ -116,8 +125,12 @@ Not sure if all of this still applies, since changes have been made to the app.
 
 ## Data Processing Details
 
+### Update Portfolio Data
+1. Export/download from broker sites - see instructions in holdings sheets in Google Sheets.
+2. Run `test_batch_upload.R` to use `upload_holdings.R` functions to upload broker site downloads from `downloads` folder to Google Sheets.
+
 ### Portfolio Data Processing
-1. Reads TD Holdings sheet from Google Sheets
+1. Reads specified holdings sheets from Google Sheets
 2. Converts Date column to proper date format
 3. Filters for most recent date only
 4. Cleans and standardizes symbol names (uppercase, trimmed)
@@ -172,6 +185,7 @@ periods <- list(
 ### Changing Data Source
 To use a different Google Sheet:
 1. Update the `sheet_url` in `server.R`
+
 ## Support
 
 For issues related to:
