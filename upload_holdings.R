@@ -170,9 +170,9 @@ find_latest_xlsx <- function(file_id, downloads_dir = "~/Downloads") {
   }
   files <- list.files(dir_norm, pattern = "\\.xlsx$", full.names = TRUE,
                       ignore.case = TRUE)
-  files <- files[str_detect(basename(files), fixed(file_id, ignore_case = TRUE))]
+  files <- files[str_starts(basename(files), fixed(file_id, ignore_case = TRUE))]
   if (length(files) == 0) {
-    stop("No .xlsx files containing '", file_id, "' in ", dir_norm)
+    cat("No .xlsx files containing '", file_id, "' in ", dir_norm,"\n")
   }
   info <- file.info(files)
   files[order(info$mtime, decreasing = TRUE)][1]
@@ -207,7 +207,8 @@ parse_holdings_xlsx <- function(xlsx_path, sheet = "Positions") {
 }
 
 # ---- Target-tab introspection ----------------------------------------------
-
+# NOT WORKING -> WRITING STRINGS INSTEAD OF DATES
+# - replaced with simple date conversion before sheet_append() below, which seems to work fine and is simpler than trying to read + interpret the existing sheet data
 # Coerce a character vector of sheet-read values into Date. Handles both ISO
 # strings ("2026-04-17") and numeric serial dates stored as strings ("46129",
 # Google Sheets epoch = 1899-12-30). Anything else returns NA.
@@ -246,15 +247,17 @@ find_existing_snapshot_rows <- function(sheet_url, tab_name, match_date, match_a
   )
 }
 
-# Return the 1-based row number where new data should be written. This is one
-# past the last non-empty row in column C (Symbol) on the target tab.
-# THIS DOES NOT WORK WITH C - can be blank symbols
-# try with E - has data in all rows, so next empty row is always last row + 1
+# Return number of rows that determines where new data should be written.
+# - will need to also take into account the header row offset (e.g. 5) so it returns the first empty row
+# Need col with no values above header and no empty values, otherwise count will be messed up
+# F: Quantity - has data in all rows, complete count
+# REPLACED BY sheet_append() which handles this automatically
+# - this more complicated version created by AI; keeping in case useful later
 next_empty_row <- function(sheet_url, tab_name, header_row) {
   col_new_row <- read_sheet(
     sheet_url,
     sheet = tab_name,
-    range = "E:E",
+    range = "F:F",
     col_names = TRUE,
     col_types = "c"
   )
@@ -291,99 +294,114 @@ upload_holdings <- function(
   cat("  Sheet tab :", cfg$sheet_tab, "\n")
 
   file_type <- if ("file_type" %in% names(cfg)) cfg$file_type else "csv"
-
+  # includes error handling when no matching Excel file found.
   if (file_type == "xlsx") {
     file_path <- find_latest_xlsx(file_id, downloads_dir)
-    cat("  Excel     :", file_path, "\n")
-    excel_sheet <- if (!is.na(cfg$excel_sheet)) cfg$excel_sheet else "Positions"
-    cat("  Sheet     :", excel_sheet, "\n")
-    parsed <- parse_holdings_xlsx(file_path, sheet = excel_sheet)
-  } else {
+    if(!is.na(file_path)) {
+      cat("  Found Excel file:", file_path, "\n")
+      excel_sheet <- if (!is.na(cfg$excel_sheet)) cfg$excel_sheet else "Positions"
+      cat("  Sheet     :", excel_sheet, "\n")
+      parsed <- parse_holdings_xlsx(file_path, sheet = excel_sheet)
+    } else {
+      cat("Nothing to upload. No matching Excel file found.\n")
+    } 
+  } else { # no error handling if CSV not found - add if needed
     file_path <- find_latest_csv(file_id, downloads_dir)
     cat("  CSV       :", file_path, "\n")
     parsed <- parse_holdings_csv(file_path)
   }
+  # check if parsed exists -> everything else depends on it
+  if (exists("parsed")) {
+    
+    cat("  As of     :", format(parsed$as_of_date, "%Y-%m-%d"), "\n")
+    cat("  Data rows :", nrow(parsed$data), "\n")
 
-  cat("  As of     :", format(parsed$as_of_date, "%Y-%m-%d"), "\n")
-  cat("  Data rows :", nrow(parsed$data), "\n")
+    if (!is.na(parsed$account_raw) && parsed$account_raw != cfg$account) {
+      cat(
+        "  ! CSV Account ('", parsed$account_raw,
+        "') differs from configured account ('", cfg$account,
+        "'). Using configured value.\n",
+        sep = ""
+      )
+    } # end parsed config check 
 
-  if (!is.na(parsed$account_raw) && parsed$account_raw != cfg$account) {
-    cat(
-      "  ! CSV Account ('", parsed$account_raw,
-      "') differs from configured account ('", cfg$account,
-      "'). Using configured value.\n",
-      sep = ""
+      # Build upload tibble: Date, Account, then all CSV columns as-is.
+      # Date is written as an ISO character string so Sheets displays it as text
+      # (rather than a bare serial number like 46129) while remaining parseable via
+      # as.Date() on the read side in global_data.R.
+      upload_df <- parsed$data |>
+        mutate(
+          Date = format(parsed$as_of_date, "%Y-%m-%d"),
+          Account = cfg$account,
+          .before = 1 # put Date and Account at the front; this is optional and can be adjusted as needed
+        )
+      cat("  Upload    :", nrow(upload_df), "rows x ", ncol(upload_df), "cols\n")
+
+      if (dry_run) {
+        cat("\n-- Dry run: preview of first 3 rows --\n")
+        print(head(upload_df, 3))
+        cat("\n(no write to Google Sheets)\n")
+        return(invisible(upload_df))
+      }
+
+    cat("Authenticating to Google Sheets...\n")
+    auth_google_sheets()
+
+    # Duplicate-run guard: if rows with the same (Date, Account) already exist
+    # in the target tab, delete them (shifting subsequent rows up) before the
+    # new rows are appended. Matching rows must be contiguous.
+    matches <- find_existing_snapshot_rows(
+      sheet_url, cfg$sheet_tab, parsed$as_of_date, cfg$account
     )
-  }
-
-  # Build upload tibble: Date, Account, then all CSV columns as-is.
-  # Date is written as an ISO character string so Sheets displays it as text
-  # (rather than a bare serial number like 46129) while remaining parseable via
-  # as.Date() on the read side in global_data.R.
-  upload_df <- parsed$data |>
-    mutate(
-      Date = format(parsed$as_of_date, "%Y-%m-%d"),
-      Account = cfg$account,
-      .before = 1
-    )
-  cat("  Upload    :", nrow(upload_df), "rows x ", ncol(upload_df), "cols\n")
-
-  if (dry_run) {
-    cat("\n-- Dry run: preview of first 3 rows --\n")
-    print(head(upload_df, 3))
-    cat("\n(no write to Google Sheets)\n")
-    return(invisible(upload_df))
-  }
-
-  cat("Authenticating to Google Sheets...\n")
-  auth_google_sheets()
-
-  # Duplicate-run guard: if rows with the same (Date, Account) already exist
-  # in the target tab, delete them (shifting subsequent rows up) before the
-  # new rows are appended. Matching rows must be contiguous.
-  matches <- find_existing_snapshot_rows(
-    sheet_url, cfg$sheet_tab, parsed$as_of_date, cfg$account
-  )
-  if (length(matches) > 0) {
-    if (any(diff(matches) != 1L)) {
-      stop(
-        "Existing rows matching Date=", format(parsed$as_of_date, "%Y-%m-%d"),
-        " + Account='", cfg$account, "' in tab '", cfg$sheet_tab,
-        "' are not contiguous (rows: ", paste(matches, collapse = ", "),
-        "). Please clean up the sheet manually before re-running."
+    if (length(matches) > 0) {
+      if (any(diff(matches) != 1L)) {
+        stop(
+          "Existing rows matching Date=", format(parsed$as_of_date, "%Y-%m-%d"),
+          " + Account='", cfg$account, "' in tab '", cfg$sheet_tab,
+          "' are not contiguous (rows: ", paste(matches, collapse = ", "),
+          "). Please clean up the sheet manually before re-running."
+        )
+      }
+      first_row <- min(matches)
+      last_row  <- max(matches)
+      cat(
+        "  Replacing ", length(matches), " existing row(s) at ",
+        cfg$sheet_tab, "!A", first_row, ":", last_row, "\n",
+        sep = ""
+      )
+      range_delete(
+        ss = sheet_url,
+        sheet = cfg$sheet_tab,
+        range = cell_rows(c(first_row, last_row))
       )
     }
-    first_row <- min(matches)
-    last_row  <- max(matches)
-    cat(
-      "  Replacing ", length(matches), " existing row(s) at ",
-      cfg$sheet_tab, "!A", first_row, ":", last_row, "\n",
-      sep = ""
-    )
-    range_delete(
+
+    next_row <- next_empty_row(sheet_url, cfg$sheet_tab, cfg$header_row)
+    write_range <- sprintf("A%d", next_row)
+    cat("  Writing to ", cfg$sheet_tab, "!", write_range, "\n", sep = "")
+
+    # REPLACED BY sheet_append() below for easy automatical handling
+    # - this more complicated version created by AI; keeping in case useful later
+    #range_write(
+    #  ss = sheet_url,
+    #  data = upload_df,
+    #  sheet = cfg$sheet_tab,
+    #  range = write_range,
+    #  col_names = FALSE,
+    #  reformat = FALSE
+    #)
+    upload_df$Date <- date(upload_df$Date)
+    sheet_append(
       ss = sheet_url,
-      sheet = cfg$sheet_tab,
-      range = cell_rows(c(first_row, last_row))
+      data = upload_df,
+      sheet = cfg$sheet_tab
     )
-  }
-
-  next_row <- next_empty_row(sheet_url, cfg$sheet_tab, cfg$header_row)
-  write_range <- sprintf("A%d", next_row)
-  cat("  Writing to ", cfg$sheet_tab, "!", write_range, "\n", sep = "")
-
-  range_write(
-    ss = sheet_url,
-    data = upload_df,
-    sheet = cfg$sheet_tab,
-    range = write_range,
-    col_names = FALSE,
-    reformat = FALSE
-  )
-
-  cat("\U2713 Uploaded ", nrow(upload_df), " rows to ", cfg$sheet_tab,
-      " starting at ", write_range, "\n", sep = "")
-  invisible(upload_df)
-}
+    cat("\U2713 Uploaded ", nrow(upload_df), " rows to ", cfg$sheet_tab,
+        " starting at ", write_range, "\n", sep = "")
+    invisible(upload_df)
+    
+    } # end parsed exists test
+  } # end upload_holdings() function
 
 # ---- CLI --------------------------------------------------------------------
 
