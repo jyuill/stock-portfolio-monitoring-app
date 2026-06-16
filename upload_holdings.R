@@ -1,6 +1,8 @@
-# Upload broker-export holdings CSVs into the portfolio Google Sheet.
+# Functions to upload broker-export holdings CSVs into the portfolio Google Sheet.
 #
 # Usage (interactive):
+#   Run from batch_upload.R to use functions
+#  alternate manual option:
 #   source("upload_holdings.R")
 #   upload_holdings("20LWH2S")                   # picks latest matching CSV in ~/Downloads
 #   upload_holdings("20LWH2S", dry_run = TRUE)   # parse + preview only, no write
