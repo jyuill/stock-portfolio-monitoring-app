@@ -2,7 +2,7 @@
 
 A Shiny application for monitoring stock portfolio performance with data sourced from Google Sheets and real-time price feeds.
 
-Run locally OR https://fig4-stock-port-mon.share.connect.posit.cloud/
+Run locally OR [https://fig4-stock-port-mon.share.connect.posit.cloud/](https://fig4-stock-port-mon.share.connect.posit.cloud/) OR [go.fig4.com/port-mon](https://go.fig4.com/port-mon)
 
 ## Features
 
