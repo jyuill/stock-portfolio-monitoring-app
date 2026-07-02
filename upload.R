@@ -2,6 +2,9 @@
 # 1. export files from brokers to downloads folder
 # 2. run this script to leverage upload_holdings.R functions and upload to gsheets
 
+# MAIN SECTION
+# - run this section AFTER exporting files from broker accts
+
 # upload_holdings.R: source for functions
 # includes the HOLDINGS_SOURCES table to match with funcion call
 source('upload_holdings.R')
@@ -13,6 +16,7 @@ for (i in 1:nrow(HOLDINGS_SOURCES)) {
   )
 }
 # DONE: unless errors, everything should be uploaded to gsheets
+# - ready to be viewed in portfolio tracker app
 
 #============
 # individual run for testing
