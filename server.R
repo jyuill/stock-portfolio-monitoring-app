@@ -273,7 +273,17 @@ server <- function(input, output, session) {
 
     account_choices <- sort(unique(portfolio_positions_r()$Account))
     account_choices <- account_choices[!is.na(account_choices) & account_choices != ""]
-    updateSelectInput(session, "account_filter", choices = c("All", account_choices), selected = "All")
+    selected_accounts <- isolate(input$account_filter)
+    selected_accounts <- selected_accounts[selected_accounts %in% account_choices]
+    if (length(selected_accounts) == 0) {
+      selected_accounts <- "All"
+    }
+    updateSelectInput(
+      session,
+      "account_filter",
+      choices = c("All", account_choices),
+      selected = selected_accounts
+    )
 
     geo_choices <- sort(unique(portfolio_data_r()$Geo))
     geo_choices <- geo_choices[!is.na(geo_choices) & geo_choices != ""]
@@ -284,6 +294,17 @@ server <- function(input, output, session) {
     updateSelectInput(session, "objective_filter", choices = c("All", objective_choices), selected = "All")
   })
   
+  observeEvent(input$account_filter, {
+    selected_accounts <- input$account_filter
+    if (length(selected_accounts) > 1 && "All" %in% selected_accounts) {
+      updateSelectInput(
+        session,
+        "account_filter",
+        selected = setdiff(selected_accounts, "All")
+      )
+    }
+  }, ignoreInit = TRUE)
+
   # Render portfolio summary using pre-loaded data
   output$portfolio_summary <- renderText({
     paste0(
@@ -322,15 +343,18 @@ server <- function(input, output, session) {
     }
 
     # Apply account filter
-    if (!is.null(input$account_filter) && input$account_filter != "All") {
+    selected_accounts <- input$account_filter
+    if (!is.null(selected_accounts) &&
+        length(selected_accounts) > 0 &&
+        !"All" %in% selected_accounts) {
       symbols_in_account <- portfolio_data_r() |>
         rowwise() |>
         mutate(
-          account_match = ifelse(
-            is.na(Accounts),
-            FALSE,
-            input$account_filter %in% trimws(unlist(strsplit(Accounts, ",\\s*")))
-          )
+          account_match = !is.na(Accounts) &&
+            length(intersect(
+              selected_accounts,
+              trimws(unlist(strsplit(Accounts, ",\\s*")))
+            )) > 0
         ) |>
         ungroup() |>
         filter(account_match) |>
@@ -387,9 +411,12 @@ server <- function(input, output, session) {
         filter(Sector == input$sector_filter)
     }
 
-    if (!is.null(input$account_filter) && input$account_filter != "All") {
+    selected_accounts <- input$account_filter
+    if (!is.null(selected_accounts) &&
+        length(selected_accounts) > 0 &&
+        !"All" %in% selected_accounts) {
       positions <- positions |>
-        filter(Account == input$account_filter)
+        filter(Account %in% selected_accounts)
     }
 
     if (!is.null(input$geo_filter) && input$geo_filter != "All") {

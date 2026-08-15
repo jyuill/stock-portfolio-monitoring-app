@@ -1,0 +1,8 @@
+{
+  "permission": {
+    "read": {
+      "*.R": "allow",
+      "*/.Renviron": "allow"
+    }
+  }
+}
