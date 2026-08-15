@@ -1,6 +1,9 @@
 # Running a batch of uploads to gsheets
 # 1. export files from brokers to downloads folder
+#   - see instructions in Invest Money Mgmt googlesheet 
 # 2. run this script to leverage upload_holdings.R functions and upload to gsheets
+
+library(tidyverse)
 
 # MAIN SECTION
 # - run this section AFTER exporting files from broker accts
