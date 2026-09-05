@@ -126,8 +126,8 @@ Not sure if all of this still applies, since changes have been made to the app.
 ## Data Processing Details
 
 ### Update Portfolio Data
-1. Export/download from broker sites - see instructions in holdings sheets in Google Sheets.
-2. Run `upload.R` top section to use `upload_holdings.R` functions to upload broker site downloads to gsheets from `downloads` folder to Google Sheets.
+1. **Export/download** from broker sites - see instructions in holdings sheets in Google Sheets.
+2. **Run `upload.R`** top section to use `upload_holdings.R` functions to upload broker site downloads to gsheets from `downloads` folder to Google Sheets.
 
 ### Portfolio Data Processing
 1. Reads specified holdings sheets from Google Sheets
