@@ -137,6 +137,25 @@ Not sure if all of this still applies, since changes have been made to the app.
 5. Aggregates quantities across accounts for each symbol
 6. Removes invalid entries (missing symbols, zero quantities)
 
+### Portfolio Balance Data
+Separate from the holdings-level **Portfolio Data** above, this tracks month-by-month, account-level balances (beginning/ending balance, dividends, cash) extracted directly from TD Direct Investing statement PDFs — not from Google Sheets.
+
+**Setup**:
+1. Download statement PDFs from TD and drop them into the `stmts/` folder (any filenames; a single PDF may bundle several months back-to-back).
+2. Run:
+   ```r
+   source("extract.R")
+   ```
+   This calls `process_stmts()`, which extracts every month found in each PDF and appends/updates rows in `data/portfolio_monthly.csv`.
+
+**Behavior**:
+- A statement is (re)processed only if its file was downloaded (by file mtime) more recently than the last time its account(s) were processed, so re-running `extract.R` after dropping in new statements only processes what's new.
+- Re-processing a statement overwrites any existing row(s) for the same `account_id`/`month`, so a corrected/re-downloaded PDF safely replaces stale data.
+- Accounts that hold both a CDN and a US-dollar leg under the same account number (e.g. "Direct Trading") are split into separate rows: the CDN leg keeps the bare account number, the USD leg gets a `-USD` suffix. A `currency` column (`CAD`/`USD`) marks each row for clarity and any future conversion to CDN.
+- When a statement shows no activity at all for the month, TD omits the activity/dividends section from the PDF; the extractor falls back to the "Cash" line in the holdings table for `ending_cash_balance` and treats dividends as `0` for that month.
+
+**Output columns** (`data/portfolio_monthly.csv`): `account_id`, `currency`, `month`, `beginning_balance`, `ending_balance`, `change_in_balance`, `dividends_this_period`, `dividends_ytd`, `ending_cash_balance`, `notable_contribution`, `date_processed`.
+
 ### Price Data Processing
 1. Fetches historical price data from Yahoo Finance
 2. Attempts multiple symbol formats (e.g., adds .TO for TSX stocks)
