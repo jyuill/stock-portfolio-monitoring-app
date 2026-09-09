@@ -1,13 +1,19 @@
-## extract_td_statement.R
-## Extracts key portfolio-level metrics from a TD Direct Investing statement
-## PDF and appends a row per month to portfolio_monthly.csv. A single PDF may
-## bundle multiple monthly statements back-to-back (each starting on its own
-## page with a "<Month> D, YYYY to <Month> D, YYYY" period header) — this is
-## detected automatically and one row is written per month found.
+## extract_stmt.R
+## Extracts key portfolio-level metrics from brokerage statement PDFs and
+## appends a row per month to portfolio_monthly.csv. Two statement formats
+## are supported, auto-detected from the PDF text:
+##   - TD Direct Investing ("Account number: ..."). A single PDF may bundle
+##     multiple monthly statements back-to-back (each starting on its own
+##     page with a "<Month> D, YYYY to <Month> D, YYYY" period header) — this
+##     is detected automatically and one row is written per month found.
+##   - Questrade ("Account #: ..."). Each PDF covers a single month, with
+##     CAD and USD legs already combined into one CAD figure by Questrade
+##     itself, so one row is written per PDF.
 ##
 ## Usage:
 ##   source("extract_stmt.R")
 ##   extract_statement("path/to/Statement_20LWH2.pdf", csv_path = "data/portfolio_monthly.csv")
+##   extract_statement("path/to/Individual RRSP_2026-01-01.pdf", csv_path = "data/portfolio_monthly.csv")
 
 library(pdftools)
 library(stringr)
@@ -16,10 +22,10 @@ library(readr)
 library(lubridate)
 library(purrr)
 
-# Marks the first page of each monthly statement within the PDF.
+# Marks the first page of each monthly statement within a TD PDF.
 period_pattern <- "([A-Z][a-z]+) \\d{1,2}, (\\d{4}) to [A-Z][a-z]+ \\d{1,2}, \\d{4}"
 
-# --- Extract one month's metrics from the pages belonging to that statement -
+# --- TD: extract one month's metrics from the pages belonging to that statement -
 extract_one_period <- function(txt, pdf_path) {
 
   # --- Account number ------------------------------------------------------
@@ -118,6 +124,7 @@ extract_one_period <- function(txt, pdf_path) {
 
   row <- tibble(
     account_id = account_id,
+    institution = "TD",
     currency = currency,
     month = month_label,
     beginning_balance = beginning_balance,
@@ -144,8 +151,8 @@ extract_one_period <- function(txt, pdf_path) {
   row
 }
 
-# --- Extract every month found in a (possibly multi-month) statement PDF ----
-extract_statement <- function(pdf_path, csv_path = "data/portfolio_monthly.csv") {
+# --- TD: extract every month found in a (possibly multi-month) statement PDF -
+extract_td_pages <- function(pdf_path) {
 
   pages <- pdf_text(pdf_path)
 
@@ -159,10 +166,142 @@ extract_statement <- function(pdf_path, csv_path = "data/portfolio_monthly.csv")
 
   section_ends <- c(section_starts[-1] - 1, length(pages))
 
-  new_rows <- map2(section_starts, section_ends, function(start, end) {
+  map2(section_starts, section_ends, function(start, end) {
     txt <- paste(pages[start:end], collapse = "\n")
     extract_one_period(txt, pdf_path)
-  }) |> list_rbind() |>
+  }) |> list_rbind()
+}
+
+# --- Questrade: numeric-token helpers ----------------------------------------
+# Cells are rendered as "-" for zero, "(1,234.56)" for negative, or
+# "1,234.56" for positive. Converts one such token to a number.
+qt_num <- function(x) {
+  x <- str_trim(x)
+  if (is.na(x) || x == "-") return(0)
+  negative <- str_detect(x, "^\\(")
+  value <- x |> str_remove_all("[(),]") |> as.numeric()
+  if (negative) -value else value
+}
+
+# Pulls every dollar-amount-shaped token (including "-" for zero) out of a
+# matched line of Questrade statement text, in left-to-right order.
+qt_row_tokens <- function(line) {
+  if (is.na(line)) return(numeric(0))
+  str_extract_all(line, "\\(?[\\d,]+\\.\\d{2}\\)?|-")[[1]] |> map_dbl(qt_num)
+}
+
+# --- Questrade: extract the single month's metrics from a statement PDF -----
+# Questrade combines CAD and USD legs into one "Combined in CAD" figure, so
+# a row is written per account, not per currency. Some tables (e.g. the
+# "Investment income" section on the Summary pages) render as CAD/USD/Combined
+# triplets per period when both currencies had activity at some point in the
+# statement's history, but collapse to just CAD/Combined when a currency has
+# never appeared — regardless of column count, the Combined figure is always
+# the last token within its period, so the token list is split in half and
+# the last token of each half is taken (this works for both the 2-token and
+# 3-token-per-period layouts).
+extract_questrade_page <- function(pdf_path) {
+
+  full_txt <- paste(pdf_text(pdf_path), collapse = "\n")
+
+  account_id <- str_match(full_txt, "Account #:\\s*(\\S+)")[, 2]
+  if (is.na(account_id)) {
+    warning("Could not find 'Account #:' in ", basename(pdf_path), ". Check manually.")
+  }
+
+  # --- Statement month (for the month label) ------------------------------
+  month_match <- str_match(full_txt, "Current month:\\s*([A-Za-z]+) (\\d{1,2}), (\\d{4})")
+  month_name <- month_match[, 2]
+  year       <- month_match[, 4]
+  if (is.na(month_name)) {
+    stop("Could not find 'Current month:' header in ", basename(pdf_path))
+  }
+  month_label <- format(ymd(paste(year, match(month_name, month.name), "01")), "%Y-%m")
+
+  # --- Balance Changes (Summary section): opening/closing balance, ---------
+  # deposits, withdrawals — all already combined in CAD, one value per
+  # period (CURRENT MONTH | YEAR TO DATE | LAST YEAR | SINCE OPENED).
+  opening_line <- str_match(full_txt,
+    "Opening balance\\s+[\\d,.()\\-]+\\s+[\\d,.()\\-]+\\s+[\\d,.()\\-]+\\s+[\\d,.()\\-]+")[, 1]
+  beginning_balance <- qt_row_tokens(opening_line)[1]
+
+  closing_line <- str_match(full_txt,
+    "Closing balance\\s+[\\d,.()\\-]+\\s+[\\d,.()\\-]+\\s+[\\d,.()\\-]+\\s+[\\d,.()\\-]+")[, 1]
+  ending_balance <- qt_row_tokens(closing_line)[1]
+
+  # change_in_balance is computed as the literal ending - beginning
+  # difference (matching how the TD side of this pipeline defines it), not
+  # Questrade's own "Change in balance²" figure, which nets out deposits/
+  # withdrawals to show pure market growth instead.
+  change_in_balance <- round(ending_balance - beginning_balance, 2)
+
+  deposits_line <- str_match(full_txt,
+    "Deposits\\s+[\\d,.()\\-]+\\s+[\\d,.()\\-]+\\s+[\\d,.()\\-]+\\s+[\\d,.()\\-]+")[, 1]
+  deposits <- qt_row_tokens(deposits_line)[1]
+
+  withdrawals_line <- str_match(full_txt,
+    "Withdrawals\\s+[\\d,.()\\-]+\\s+[\\d,.()\\-]+\\s+[\\d,.()\\-]+\\s+[\\d,.()\\-]+")[, 1]
+  withdrawals <- qt_row_tokens(withdrawals_line)[1]
+
+  # Net cash/asset moved into the account this period. Mirrors TD's
+  # 'notable_contribution' column: change_in_balance - notable_contribution
+  # gives the true market-growth component (which should match Questrade's
+  # own "Change in balance²" figure as a sanity check).
+  notable_contribution <- deposits - withdrawals
+
+  # --- Ending cash balance (Total Book Cost section, "Total Cash") --------
+  cash_line <- str_match(full_txt, "Total Cash\\s+([\\d,]+\\.\\d{2})\\s+([\\d,]+\\.\\d{2})")
+  ending_cash_balance <- cash_line[, 2] |> str_remove_all(",") |> as.numeric()
+
+  # --- Dividends: this period + YTD (Investment income section, "Dividend" -
+  # Earned row). See helper documentation above for the halves-split logic.
+  dividend_line <- str_match(full_txt,
+    "Dividend\\s+[\\d,.()\\-]+\\s+[\\d,.()\\-]*\\s*[\\d,.()\\-]+\\s+[\\d,.()\\-]+\\s+[\\d,.()\\-]*\\s*[\\d,.()\\-]+")[, 1]
+  div_tokens <- qt_row_tokens(dividend_line)
+  if (length(div_tokens) < 2 || length(div_tokens) %% 2 != 0) {
+    warning("Could not reliably parse the dividend income row for ", account_id,
+             " / ", month_label, ". Check ", basename(pdf_path), " manually.")
+    dividends_this_period <- NA_real_
+    dividends_ytd <- NA_real_
+  } else {
+    half <- length(div_tokens) / 2
+    dividends_this_period <- div_tokens[half]
+    dividends_ytd <- div_tokens[length(div_tokens)]
+  }
+
+  row <- tibble(
+    account_id = account_id,
+    institution = "Questrade",
+    currency = "CAD",
+    month = month_label,
+    beginning_balance = beginning_balance,
+    ending_balance = ending_balance,
+    change_in_balance = change_in_balance,
+    dividends_this_period = dividends_this_period,
+    dividends_ytd = dividends_ytd,
+    ending_cash_balance = ending_cash_balance,
+    notable_contribution = notable_contribution
+  )
+
+  message("Extracted ", account_id, " / ", month_label,
+          ": ending balance $", format(ending_balance, big.mark = ","),
+          " | change $", format(change_in_balance, big.mark = ","),
+          " | dividends this period $", dividends_this_period)
+
+  if (notable_contribution > 0) {
+    message("NOTE: a deposit/transfer-in of $", format(notable_contribution, big.mark = ","),
+            " was detected in ", month_label,
+            ". This inflates 'change_in_balance' relative to true market growth — ",
+            "consider a 'true_growth' column of change_in_balance - notable_contribution when charting.")
+  }
+
+  row
+}
+
+# --- Merge newly extracted rows into the CSV, overwriting same account/month -
+write_new_rows <- function(new_rows, csv_path, pdf_path) {
+
+  new_rows <- new_rows |>
     mutate(date_processed = format(Sys.time(), "%Y-%m-%d %H:%M:%S"))
 
   if (file.exists(csv_path)) {
@@ -191,8 +330,26 @@ extract_statement <- function(pdf_path, csv_path = "data/portfolio_monthly.csv")
   invisible(combined)
 }
 
+# --- Extract every month found in a statement PDF, TD or Questrade ----------
+extract_statement <- function(pdf_path, csv_path = "data/portfolio_monthly.csv") {
+
+  full_txt <- paste(pdf_text(pdf_path), collapse = "\n")
+
+  new_rows <- if (str_detect(full_txt, "Account number:")) {
+    extract_td_pages(pdf_path)
+  } else if (str_detect(full_txt, "Account #:")) {
+    extract_questrade_page(pdf_path)
+  } else {
+    stop("Unrecognized statement format in ", basename(pdf_path),
+         " — expected a TD ('Account number:') or Questrade ('Account #:') statement.")
+  }
+
+  write_new_rows(new_rows, csv_path, pdf_path)
+}
+
 ## Example (uncomment to run):
 # extract_statement("Statement_Sept2026.pdf", csv_path = "data/portfolio_monthly.csv")
+# extract_statement("Individual RRSP_2026-01-01.pdf", csv_path = "data/portfolio_monthly.csv")
 
 # --- Process every statement in a folder, skipping ones already up to date -
 # A statement PDF is (re)processed only if it was downloaded (by file mtime)
@@ -221,8 +378,12 @@ process_stmts <- function(stmts_dir = "stmts", csv_path = "data/portfolio_monthl
 
   for (pdf_path in pdf_files) {
 
-    raw_accounts <- str_match_all(pdf_text(pdf_path), "Account number:\\s*(\\S+)") |>
-      map(~ .x[, 2]) |>
+    pages <- pdf_text(pdf_path)
+
+    # Account ids are labelled "Account number:" on TD statements and
+    # "Account #:" on Questrade statements.
+    raw_accounts <- str_match_all(pages, "Account number:\\s*(\\S+)|Account #:\\s*(\\S+)") |>
+      map(~ ifelse(is.na(.x[, 2]), .x[, 3], .x[, 2])) |>
       unlist() |>
       unique()
 

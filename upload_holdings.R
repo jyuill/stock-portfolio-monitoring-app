@@ -405,6 +405,72 @@ upload_holdings <- function(
     } # end parsed exists test
   } # end upload_holdings() function
 
+# ---- Portfolio monthly summary upload ---------------------------------------
+# Uploads data/portfolio_monthly.csv (written by extract_stmt.R) to the
+# 'portfolio_mthly' tab, starting at row 5, in the same Google Sheet as
+# upload_holdings(). Unlike upload_holdings(), this replaces the tab's entire
+# data range on every call rather than appending/de-duplicating rows, because
+# portfolio_monthly.csv already holds the complete, deduplicated, sorted
+# dataset each time extract_stmt.R rewrites it (see extract_statement()).
+# The target range is cleared first so a shorter CSV (e.g. after a row is
+# corrected/removed upstream) doesn't leave stale rows behind.
+
+PORTFOLIO_MONTHLY_SHEET_TAB <- "portfolio_mthly"
+PORTFOLIO_MONTHLY_HEADER_ROW <- 5
+
+upload_portfolio_monthly <- function(
+  csv_path = "data/portfolio_monthly.csv",
+  sheet_url = SHEET_URL,
+  sheet_tab = PORTFOLIO_MONTHLY_SHEET_TAB,
+  header_row = PORTFOLIO_MONTHLY_HEADER_ROW,
+  dry_run = FALSE
+) {
+  cat("=== Upload portfolio monthly: ", csv_path, " ===\n", sep = "")
+  if (!file.exists(csv_path)) {
+    stop("File not found: ", csv_path)
+  }
+
+  # date_processed is read as character (rather than left to readr's type
+  # guessing, which parses it as a datetime) so it's written to Sheets as
+  # plain text and displays as-is, rather than as an unformatted serial
+  # number (range_write() below uses reformat = FALSE, so no Sheets date
+  # format gets attached to numeric/datetime values).
+  data <- suppressMessages(read_csv(
+    csv_path, show_col_types = FALSE,
+    col_types = cols(date_processed = col_character(), .default = col_guess())
+  ))
+  cat("  Data rows :", nrow(data), "x", ncol(data), "cols\n")
+
+  if (dry_run) {
+    cat("\n-- Dry run: preview of first 3 rows --\n")
+    print(head(data, 3))
+    cat("\n(no write to Google Sheets)\n")
+    return(invisible(data))
+  }
+
+  cat("Authenticating to Google Sheets...\n")
+  auth_google_sheets()
+
+  clear_range <- sprintf("A%d:%s", header_row, paste0(LETTERS[ncol(data)], header_row + nrow(data) + 100L))
+  cat("  Clearing  : ", sheet_tab, "!", clear_range, "\n", sep = "")
+  range_clear(ss = sheet_url, sheet = sheet_tab, range = clear_range, reformat = FALSE)
+
+  write_range <- sprintf("A%d", header_row)
+  cat("  Writing to: ", sheet_tab, "!", write_range, "\n", sep = "")
+  range_write(
+    ss = sheet_url,
+    data = data,
+    sheet = sheet_tab,
+    range = write_range,
+    col_names = TRUE,
+    reformat = FALSE
+  )
+
+  cat("\U2713 Uploaded ", nrow(data), " rows to ", sheet_tab,
+      " starting at ", write_range, "\n", sep = "")
+  invisible(data)
+}
+
 # ---- CLI --------------------------------------------------------------------
 
 if (!interactive() && sys.nframe() == 0L) {
