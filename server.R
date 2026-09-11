@@ -894,7 +894,276 @@ server <- function(input, output, session) {
         legend = list(orientation = "h", y = -0.2)
       )
   })
-  
+
+  # ---- Portfolio Overview tab: monthly balance trends -----------------------
+  # Driven by portfolio_monthly_data (loaded in global_data.R from the
+  # 'portfolio_mthly' Google Sheet tab, which extract_stmt.R + upload_holdings.R
+  # populate from bank/brokerage statements; account_label comes from the 'ref'
+  # sheet, mapping statement account numbers to the same account names used
+  # elsewhere in the app, e.g. "20LWH2-S" -> "TD-RSP"). This is still a
+  # different granularity from the holdings-based Account filter in the
+  # sidebar (whole-account cash+securities balances vs. per-symbol holdings),
+  # so it intentionally doesn't hook into that filter — figures below are
+  # always across all statement accounts.
+  portfolio_monthly_r <- reactive({
+    data_version()
+    portfolio_monthly_data
+  })
+
+  pm_combined <- reactive({
+    data <- portfolio_monthly_r()
+    if (nrow(data) == 0) {
+      return(data.frame())
+    }
+
+    data |>
+      group_by(Month_Date) |>
+      summarise(
+        beginning_balance = sum(beginning_balance, na.rm = TRUE),
+        ending_balance = sum(ending_balance, na.rm = TRUE),
+        change_in_balance = sum(change_in_balance, na.rm = TRUE),
+        dividends_this_period = sum(dividends_this_period, na.rm = TRUE),
+        notable_contribution = sum(notable_contribution, na.rm = TRUE),
+        # A month is flagged estimated if ANY account's figure that month was
+        # gap-filled (see global_data.R), even though the combined total also
+        # includes other accounts' actual reported figures.
+        Is_Estimated = any(Is_Estimated),
+        .groups = "drop"
+      ) |>
+      arrange(Month_Date)
+  })
+
+  pm_grouped <- reactive({
+    data <- portfolio_monthly_r()
+    if (nrow(data) == 0) {
+      return(data.frame())
+    }
+
+    group_col <- input$pm_group_by
+    if (is.null(group_col) || !group_col %in% c("account_label", "institution")) {
+      group_col <- "account_label"
+    }
+
+    data |>
+      group_by(Month_Date, Group = .data[[group_col]]) |>
+      summarise(
+        ending_balance = sum(ending_balance, na.rm = TRUE),
+        Is_Estimated = any(Is_Estimated),
+        .groups = "drop"
+      ) |>
+      arrange(Group, Month_Date)
+  })
+
+  # Adds a solid "actual" line/marker trace plus a dotted "estimated" trace to
+  # a plotly object for one series, so months with no statement yet (gap-
+  # filled in global_data.R) read visually as an estimate rather than as
+  # confirmed data. The dotted segment is bridged from the last actual point
+  # so it connects to, rather than floats disconnected from, the solid line.
+  add_estimate_aware_trace <- function(p, series_data, name, color, show_name_in_legend = TRUE) {
+    series_data <- series_data |> arrange(Month_Date)
+    actual <- series_data |> filter(!Is_Estimated)
+    estimated <- series_data |> filter(Is_Estimated)
+
+    if (nrow(actual) > 0) {
+      p <- p |> add_trace(
+        data = actual, x = ~Month_Date, y = ~ending_balance, type = "scatter", mode = "lines+markers",
+        name = name, legendgroup = name, showlegend = show_name_in_legend,
+        line = list(color = color), marker = list(color = color),
+        hovertemplate = paste0("%{x|%Y-%m}<br>", name, "<br>Value: $%{y:,.0f}<extra></extra>")
+      )
+    }
+
+    if (nrow(estimated) > 0) {
+      bridge <- if (nrow(actual) > 0) tail(actual, 1) else estimated[0, ]
+      estimated_with_bridge <- bind_rows(bridge, estimated) |> arrange(Month_Date)
+
+      p <- p |> add_trace(
+        data = estimated_with_bridge, x = ~Month_Date, y = ~ending_balance, type = "scatter", mode = "lines+markers",
+        name = paste0(name, " (estimated)"), legendgroup = name, showlegend = FALSE,
+        line = list(color = color, dash = "dot"), marker = list(color = color, symbol = "circle-open"),
+        hovertemplate = paste0(
+          "%{x|%Y-%m}<br>", name, " (estimated — statement not yet available)<br>Value: $%{y:,.0f}<extra></extra>"
+        )
+      )
+    }
+
+    p
+  }
+
+  output$pm_total_value <- renderValueBox({
+    combined <- pm_combined()
+    if (nrow(combined) == 0) {
+      return(valueBox(value = "N/A", subtitle = "Combined Portfolio Value", icon = icon("chart-line"), color = "aqua"))
+    }
+    latest <- combined |> filter(Month_Date == max(Month_Date))
+    valueBox(
+      value = fmt_currency(latest$ending_balance, 0),
+      subtitle = paste0(
+        "Combined Portfolio Value (", format(latest$Month_Date, "%Y-%m"), ")",
+        if (latest$Is_Estimated) " — includes estimate" else ""
+      ),
+      icon = icon("chart-line"),
+      color = "aqua"
+    )
+  })
+
+  output$pm_month_change <- renderValueBox({
+    combined <- pm_combined()
+    if (nrow(combined) == 0) {
+      return(valueBox(value = "N/A", subtitle = "Change in Balance", icon = icon("arrow-trend-up"), color = "light-blue"))
+    }
+    latest <- combined |> filter(Month_Date == max(Month_Date))
+    change_pct <- ifelse(latest$beginning_balance != 0, latest$change_in_balance / latest$beginning_balance, NA_real_)
+    label <- paste0(
+      fmt_currency(latest$change_in_balance, 0),
+      " (", ifelse(is.na(change_pct), "N/A", paste0(round(change_pct * 100, 1), "%")), ")"
+    )
+    valueBox(
+      value = label,
+      subtitle = paste0(
+        "Change in Balance (", format(latest$Month_Date, "%Y-%m"), ")",
+        if (latest$Is_Estimated) " — includes estimate" else ""
+      ),
+      icon = icon(ifelse(latest$change_in_balance >= 0, "arrow-trend-up", "arrow-trend-down")),
+      color = ifelse(latest$change_in_balance >= 0, "green", "red")
+    )
+  })
+
+  output$pm_dividends_ttm <- renderValueBox({
+    combined <- pm_combined()
+    if (nrow(combined) == 0) {
+      return(valueBox(value = "N/A", subtitle = "Dividends (Trailing 12mo)", icon = icon("coins"), color = "yellow"))
+    }
+    cutoff <- max(combined$Month_Date) - months(11)
+    ttm_dividends <- combined |>
+      filter(Month_Date >= cutoff) |>
+      pull(dividends_this_period) |>
+      sum(na.rm = TRUE)
+    valueBox(
+      value = fmt_currency(ttm_dividends, 0),
+      subtitle = "Dividends Received (Trailing 12mo, Combined)",
+      icon = icon("coins"),
+      color = "yellow"
+    )
+  })
+
+  output$pm_combined_value_line <- renderPlotly({
+    data <- pm_combined()
+    req(nrow(data) > 0)
+
+    plot_ly() |>
+      add_estimate_aware_trace(data, name = "Combined", color = "#2ca25f", show_name_in_legend = FALSE) |>
+      layout(
+        xaxis = list(title = "Month"),
+        yaxis = list(title = "Ending Balance (as reported, native currency)"),
+        showlegend = FALSE
+      )
+  })
+
+  pm_group_palette <- c("#4c78a8", "#f58518", "#54a24b", "#e45756", "#72b7b2", "#eeca3b", "#b279a2", "#ff9da6")
+
+  output$pm_account_value_line <- renderPlotly({
+    data <- pm_grouped()
+    req(nrow(data) > 0)
+
+    groups <- sort(unique(data$Group))
+    colors <- setNames(rep(pm_group_palette, length.out = length(groups)), groups)
+
+    p <- plot_ly()
+    for (g in groups) {
+      p <- add_estimate_aware_trace(p, data |> filter(Group == g), name = g, color = colors[[g]])
+    }
+
+    p |>
+      layout(
+        xaxis = list(title = "Month"),
+        yaxis = list(title = "Ending Balance (as reported, native currency)"),
+        legend = list(orientation = "h", y = -0.2)
+      )
+  })
+
+  output$pm_monthly_change_bar <- renderPlotly({
+    data <- pm_combined()
+    req(nrow(data) > 0)
+    bar_colors <- ifelse(data$change_in_balance >= 0, "#2ca25f", "#de2d26")
+    bar_opacity <- ifelse(data$Is_Estimated, 0.45, 1)
+    hover_text <- paste0(
+      format(data$Month_Date, "%Y-%m"), "<br>Change: $", format(round(data$change_in_balance, 0), big.mark = ",", trim = TRUE),
+      ifelse(data$Is_Estimated, " (partly estimated)", "")
+    )
+
+    plot_ly(
+      data, x = ~Month_Date, y = ~change_in_balance, type = "bar",
+      marker = list(color = bar_colors, opacity = bar_opacity),
+      hovertext = hover_text, hoverinfo = "text"
+    ) |>
+      layout(xaxis = list(title = "Month"), yaxis = list(title = "Change in Balance"))
+  })
+
+  output$pm_dividends_bar <- renderPlotly({
+    data <- pm_combined()
+    req(nrow(data) > 0)
+    bar_opacity <- ifelse(data$Is_Estimated, 0.45, 1)
+    bar_labels <- paste0("$", format(round(data$dividends_this_period, 0), big.mark = ",", trim = TRUE))
+    hover_text <- paste0(
+      format(data$Month_Date, "%Y-%m"), "<br>Dividends: $", format(round(data$dividends_this_period, 0), big.mark = ",", trim = TRUE),
+      ifelse(data$Is_Estimated, " (partly estimated)", "")
+    )
+    avg_dividend <- mean(data$dividends_this_period, na.rm = TRUE)
+
+    plot_ly(
+      data, x = ~Month_Date, y = ~dividends_this_period, type = "bar",
+      marker = list(color = "#3182bd", opacity = bar_opacity),
+      text = bar_labels, textposition = "outside",
+      hovertext = hover_text, hoverinfo = "text"
+    ) |>
+      layout(
+        xaxis = list(title = "Month"),
+        yaxis = list(title = "Dividends Received"),
+        shapes = list(list(
+          type = "line", xref = "paper", x0 = 0, x1 = 1,
+          yref = "y", y0 = avg_dividend, y1 = avg_dividend,
+          line = list(color = "#555555", dash = "dash", width = 1.5)
+        )),
+        annotations = list(list(
+          xref = "paper", x = 1, yref = "y", y = avg_dividend,
+          text = paste0("Avg: $", format(round(avg_dividend, 0), big.mark = ",")),
+          showarrow = FALSE, xanchor = "left", yanchor = "bottom",
+          font = list(size = 11, color = "#555555")
+        ))
+      )
+  })
+
+  output$pm_monthly_table <- renderDT({
+    data <- portfolio_monthly_r()
+    req(nrow(data) > 0)
+
+    table_data <- data |>
+      mutate(Estimated = ifelse(Is_Estimated, "Yes", "")) |>
+      select(account_label, institution, month, beginning_balance, ending_balance,
+             change_in_balance, dividends_this_period, dividends_ytd,
+             ending_cash_balance, notable_contribution, Estimated) |>
+      arrange(desc(month), account_label) |>
+      rename(
+        Account = account_label, Institution = institution, Month = month,
+        `Beginning Balance` = beginning_balance, `Ending Balance` = ending_balance,
+        Change = change_in_balance, `Dividends (Period)` = dividends_this_period,
+        `Dividends (YTD)` = dividends_ytd, `Ending Cash` = ending_cash_balance,
+        `Deposits/Withdrawals` = notable_contribution
+      )
+
+    datatable(
+      table_data,
+      options = list(pageLength = 15, scrollX = TRUE),
+      rownames = FALSE
+    ) |>
+      formatCurrency(
+        columns = c("Beginning Balance", "Ending Balance", "Change", "Dividends (Period)",
+                    "Dividends (YTD)", "Ending Cash", "Deposits/Withdrawals"),
+        currency = "$", digits = 0
+      )
+  })
+
   # Create performance heatmap
   output$performance_heatmap <- renderPlotly({
     req(filtered_performance())

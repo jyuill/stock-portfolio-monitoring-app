@@ -828,6 +828,151 @@ performance_data <- tryCatch({
   stop("Cannot proceed without performance data")
 })
 
+# Load monthly portfolio balance history (written by extract_stmt.R from bank/
+# brokerage statements, uploaded to the 'portfolio_mthly' tab by
+# upload_portfolio_monthly() in upload_holdings.R) for the "Portfolio Overview"
+# trends tab. Non-fatal on failure, unlike the loads above: this is a
+# supplementary view, so a missing/misconfigured sheet shouldn't take down the
+# rest of the app.
+cat("\nLoading monthly portfolio balance history...\n")
+portfolio_monthly_data <- tryCatch({
+  raw_monthly <- read_sheet(
+    sheet_url,
+    sheet = "portfolio_mthly",
+    range = "A5:L1000",
+    col_types = "c"
+  )
+
+  # Maps the statement account numbers used in portfolio_mthly (e.g.
+  # "20LWH2-S") to the friendlier account names used elsewhere in the app
+  # (e.g. "TD-RSP", matching the 'account' column of HOLDINGS_SOURCES in
+  # upload_holdings.R). Kept in its own small 'ref' sheet tab rather than
+  # hard-coded here so it can be updated without a code change.
+  account_ref <- tryCatch({
+    read_sheet(sheet_url, sheet = "ref", range = "A1:B6", col_types = "c") |>
+      rename(account_id = 1, account_label = 2) |>
+      filter(!is.na(account_id), account_id != "") |>
+      mutate(account_id = str_trim(account_id), account_label = str_trim(account_label))
+  }, error = function(e) {
+    cat("  - Could not load account reference mapping ('ref' sheet):", e$message, "\n")
+    data.frame(account_id = character(), account_label = character())
+  })
+
+  parse_pm_numeric <- function(x) suppressWarnings(as.numeric(x))
+
+  cleaned <- raw_monthly |>
+    filter(!is.na(account_id), account_id != "", !is.na(month), month != "") |>
+    mutate(
+      account_id = str_trim(account_id),
+      institution = ifelse(is.na(institution) | institution == "", "Unknown", str_trim(institution)),
+      currency = str_trim(currency),
+      Month_Date = ym(month),
+      beginning_balance = parse_pm_numeric(beginning_balance),
+      ending_balance = parse_pm_numeric(ending_balance),
+      change_in_balance = parse_pm_numeric(change_in_balance),
+      dividends_this_period = parse_pm_numeric(dividends_this_period),
+      dividends_ytd = parse_pm_numeric(dividends_ytd),
+      ending_cash_balance = parse_pm_numeric(ending_cash_balance),
+      notable_contribution = parse_pm_numeric(notable_contribution)
+    ) |>
+    left_join(account_ref, by = "account_id") |>
+    # Falls back to the raw account number when 'ref' has no entry for it
+    # (e.g. a new account statement extracted before 'ref' is updated), so
+    # the Portfolio Overview tab never silently drops rows.
+    mutate(account_label = coalesce(account_label, account_id)) |>
+    filter(!is.na(Month_Date)) |>
+    arrange(account_id, Month_Date) |>
+    mutate(Is_Estimated = FALSE)
+
+  # Some institutions (e.g. Questrade) publish a given month's statement
+  # only well into the following month, so that account's last real row
+  # trails behind other accounts' — summing balances as-is for the latest
+  # combined month would understate the portfolio. Fill each lagging
+  # account's trailing gap with a flat carry-forward of its last known
+  # balance (change_in_balance = 0, i.e. "no new information", not an
+  # assumed gain) up through the most recent month any account has
+  # actually reported. Dividends are estimated as that account's average
+  # monthly dividend rather than carried flat, since they vary a lot
+  # month to month. Filled rows are flagged Is_Estimated so the UI can
+  # render them distinctly (e.g. a dotted line).
+  MAX_GAP_FILL_MONTHS <- 3 # beyond this, treat the account as stale/closed and leave the gap visible rather than fabricate months indefinitely.
+
+  fill_account_gap <- function(acct_data, global_latest_month) {
+    acct_data <- acct_data |> arrange(Month_Date)
+    last_row <- acct_data |> slice_tail(n = 1)
+    last_month <- last_row$Month_Date
+    gap_months <- (year(global_latest_month) - year(last_month)) * 12 +
+      (month(global_latest_month) - month(last_month))
+
+    if (gap_months <= 0 || gap_months > MAX_GAP_FILL_MONTHS) {
+      return(acct_data)
+    }
+
+    avg_dividend <- mean(acct_data$dividends_this_period, na.rm = TRUE)
+    if (is.na(avg_dividend)) avg_dividend <- 0
+
+    missing_months <- seq(last_month %m+% months(1), global_latest_month, by = "month")
+    running_ytd <- last_row$dividends_ytd
+    running_year <- year(last_month)
+
+    synthetic_rows <- lapply(missing_months, function(m) {
+      this_dividend <- round(avg_dividend, 2)
+      if (year(m) != running_year) {
+        running_ytd <<- this_dividend
+        running_year <<- year(m)
+      } else {
+        running_ytd <<- round(running_ytd + this_dividend, 2)
+      }
+      tibble(
+        account_id = last_row$account_id,
+        account_label = last_row$account_label,
+        institution = last_row$institution,
+        currency = last_row$currency,
+        month = format(m, "%Y-%m"),
+        Month_Date = m,
+        beginning_balance = last_row$ending_balance,
+        ending_balance = last_row$ending_balance,
+        change_in_balance = 0,
+        dividends_this_period = this_dividend,
+        dividends_ytd = running_ytd,
+        ending_cash_balance = last_row$ending_cash_balance,
+        notable_contribution = 0,
+        date_processed = NA_character_,
+        Is_Estimated = TRUE
+      )
+    }) |> bind_rows()
+
+    bind_rows(acct_data, synthetic_rows)
+  }
+
+  if (nrow(cleaned) > 0) {
+    global_latest_month <- max(cleaned$Month_Date)
+    cleaned <- cleaned |>
+      group_split(account_id) |>
+      lapply(fill_account_gap, global_latest_month = global_latest_month) |>
+      bind_rows() |>
+      arrange(account_id, Month_Date)
+  }
+
+  cat(
+    "✓ Monthly portfolio history loaded:", sum(!cleaned$Is_Estimated), "actual rows,",
+    sum(cleaned$Is_Estimated), "estimated (gap-filled) rows,",
+    length(unique(cleaned$account_id)), "accounts, from",
+    format(min(cleaned$Month_Date), "%Y-%m"), "to", format(max(cleaned$Month_Date), "%Y-%m"), "\n"
+  )
+
+  cleaned
+}, error = function(e) {
+  cat("✗ Could not load monthly portfolio history (Portfolio Overview tab will be empty):", e$message, "\n")
+  data.frame(
+    account_id = character(), account_label = character(), institution = character(), currency = character(),
+    month = character(), Month_Date = as.Date(character()),
+    beginning_balance = numeric(), ending_balance = numeric(), change_in_balance = numeric(),
+    dividends_this_period = numeric(), dividends_ytd = numeric(),
+    ending_cash_balance = numeric(), notable_contribution = numeric(), Is_Estimated = logical()
+  )
+})
+
 # Create a summary for display
 data_summary <- list(
   portfolio_count = nrow(portfolio_data),

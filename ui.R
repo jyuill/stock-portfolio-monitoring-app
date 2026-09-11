@@ -10,7 +10,8 @@ ui <- dashboardPage(
   
   dashboardSidebar(
     sidebarMenu(
-      menuItem("Portfolio Overview", tabName = "overview", icon = icon("chart-line")),
+      menuItem("Portfolio Overview", tabName = "portfolio_overview", icon = icon("chart-line")),
+      menuItem("Snapshot", tabName = "overview", icon = icon("chart-pie")),
       menuItem("Performance Analysis", tabName = "performance", icon = icon("table")),
       menuItem("Sector Treemap", tabName = "treemap", icon = icon("th-large")),
       menuItem("Portfolio Details", tabName = "details", icon = icon("list")),
@@ -85,7 +86,67 @@ ui <- dashboardPage(
     ),
     
     tabItems(
-      # Portfolio Overview Tab
+      # Portfolio Overview Tab (monthly balance trends, from bank/brokerage statements)
+      tabItem(tabName = "portfolio_overview",
+        fluidRow(
+          valueBoxOutput("pm_total_value", width = 4),
+          valueBoxOutput("pm_month_change", width = 4),
+          valueBoxOutput("pm_dividends_ttm", width = 4)
+        ),
+
+        fluidRow(
+          column(12, tags$p(
+            "Dotted lines and faded bars mark months where a statement isn't available yet for that account ",
+            "(e.g. Questrade statements post ~18 days into the following month) — the balance is carried forward ",
+            "and dividends are estimated from that account's average, so combined totals aren't understated.",
+            style = "font-size: 12px; color: #8f98a3; margin: 0 0 10px 6px;"
+          ))
+        ),
+
+        fluidRow(
+          box(
+            title = "Combined Portfolio Value Over Time", status = "primary", solidHeader = TRUE,
+            width = 12,
+            plotlyOutput("pm_combined_value_line", height = "360px")
+          )
+        ),
+
+        fluidRow(
+          box(
+            title = "Portfolio Value by Account Over Time", status = "info", solidHeader = TRUE,
+            width = 12,
+            selectInput(
+              "pm_group_by", "Group by:",
+              choices = c("Account" = "account_label", "Institution" = "institution"),
+              selected = "account_label", width = "220px"
+            ),
+            plotlyOutput("pm_account_value_line", height = "360px")
+          )
+        ),
+
+        fluidRow(
+          box(
+            title = "Monthly Change in Balance (Combined)", status = "warning", solidHeader = TRUE,
+            width = 6,
+            plotlyOutput("pm_monthly_change_bar", height = "320px")
+          ),
+          box(
+            title = "Dividends Received by Month (Combined)", status = "success", solidHeader = TRUE,
+            width = 6,
+            plotlyOutput("pm_dividends_bar", height = "320px")
+          )
+        ),
+
+        fluidRow(
+          box(
+            title = "Monthly Balances Detail", status = "info", solidHeader = TRUE,
+            width = 12,
+            DTOutput("pm_monthly_table")
+          )
+        )
+      ),
+
+      # Snapshot Tab (current holdings, point-in-time)
       tabItem(tabName = "overview",
         fluidRow(
           valueBoxOutput("overview_total_value", width = 4),
