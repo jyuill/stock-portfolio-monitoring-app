@@ -131,6 +131,19 @@ ui <- dashboardPage(
             plotlyOutput("pm_monthly_change_bar", height = "320px")
           ),
           box(
+            title = "Growth Rate by Month (Combined)", status = "primary", solidHeader = TRUE,
+            width = 6,
+            plotlyOutput("pm_growth_rate_bar", height = "320px")
+          )
+        ),
+
+        fluidRow(
+          box(
+            title = "Ending Cash Balance by Account", status = "info", solidHeader = TRUE,
+            width = 6,
+            plotlyOutput("pm_cash_stacked_bar", height = "320px")
+          ),
+          box(
             title = "Dividends Received by Month (Combined)", status = "success", solidHeader = TRUE,
             width = 6,
             plotlyOutput("pm_dividends_bar", height = "320px")

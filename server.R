@@ -930,7 +930,42 @@ server <- function(input, output, session) {
         Is_Estimated = any(Is_Estimated),
         .groups = "drop"
       ) |>
-      arrange(Month_Date)
+      arrange(Month_Date) |>
+      mutate(
+        growth_rate_pct = ifelse(beginning_balance != 0, change_in_balance / beginning_balance * 100, NA_real_)
+      )
+  })
+
+  pm_cash_by_account <- reactive({
+    data <- portfolio_monthly_r()
+    if (nrow(data) == 0) {
+      return(data.frame())
+    }
+
+    data |>
+      group_by(Month_Date, account_label) |>
+      summarise(
+        ending_cash_balance = sum(ending_cash_balance, na.rm = TRUE),
+        Is_Estimated = any(Is_Estimated),
+        .groups = "drop"
+      ) |>
+      arrange(account_label, Month_Date)
+  })
+
+  pm_dividends_by_account <- reactive({
+    data <- portfolio_monthly_r()
+    if (nrow(data) == 0) {
+      return(data.frame())
+    }
+
+    data |>
+      group_by(Month_Date, account_label) |>
+      summarise(
+        dividends_this_period = sum(dividends_this_period, na.rm = TRUE),
+        Is_Estimated = any(Is_Estimated),
+        .groups = "drop"
+      ) |>
+      arrange(account_label, Month_Date)
   })
 
   pm_grouped <- reactive({
@@ -1055,7 +1090,7 @@ server <- function(input, output, session) {
       add_estimate_aware_trace(data, name = "Combined", color = "#2ca25f", show_name_in_legend = FALSE) |>
       layout(
         xaxis = list(title = "Month"),
-        yaxis = list(title = "Ending Balance (as reported, native currency)"),
+        yaxis = list(title = "Ending Balance (as reported, native currency)", rangemode = "tozero"),
         showlegend = FALSE
       )
   })
@@ -1097,40 +1132,93 @@ server <- function(input, output, session) {
       marker = list(color = bar_colors, opacity = bar_opacity),
       hovertext = hover_text, hoverinfo = "text"
     ) |>
-      layout(xaxis = list(title = "Month"), yaxis = list(title = "Change in Balance"))
+      layout(xaxis = list(title = ""), yaxis = list(title = "Change in Balance"))
+  })
+
+  output$pm_growth_rate_bar <- renderPlotly({
+    data <- pm_combined()
+    req(nrow(data) > 0)
+    bar_colors <- ifelse(data$growth_rate_pct >= 0, "#2ca25f", "#de2d26")
+    bar_opacity <- ifelse(data$Is_Estimated, 0.45, 1)
+    hover_text <- paste0(
+      format(data$Month_Date, "%Y-%m"), "<br>Growth: ", round(data$growth_rate_pct, 1), "%",
+      ifelse(data$Is_Estimated, " (partly estimated)", "")
+    )
+
+    plot_ly(
+      data, x = ~Month_Date, y = ~growth_rate_pct, type = "bar",
+      marker = list(color = bar_colors, opacity = bar_opacity),
+      hovertext = hover_text, hoverinfo = "text"
+    ) |>
+      layout(xaxis = list(title = ""), yaxis = list(title = "Growth Rate (%)", ticksuffix = "%"))
+  })
+
+  output$pm_cash_stacked_bar <- renderPlotly({
+    data <- pm_cash_by_account()
+    req(nrow(data) > 0)
+    hover_text <- paste0(
+      format(data$Month_Date, "%Y-%m"), "<br>", data$account_label,
+      "<br>Cash: $", format(round(data$ending_cash_balance, 0), big.mark = ",", trim = TRUE),
+      ifelse(data$Is_Estimated, " (estimated)", "")
+    )
+
+    plot_ly(
+      data, x = ~Month_Date, y = ~ending_cash_balance, color = ~account_label, colors = pm_group_palette,
+      type = "bar", hovertext = hover_text, hoverinfo = "text"
+    ) |>
+      layout(
+        barmode = "stack",
+        xaxis = list(title = ""),
+        yaxis = list(title = "Ending Cash Balance (native currency)"),
+        legend = list(orientation = "h", y = -0.2)
+      )
   })
 
   output$pm_dividends_bar <- renderPlotly({
-    data <- pm_combined()
+    data <- pm_dividends_by_account()
     req(nrow(data) > 0)
-    bar_opacity <- ifelse(data$Is_Estimated, 0.45, 1)
-    bar_labels <- paste0("$", format(round(data$dividends_this_period, 0), big.mark = ",", trim = TRUE))
+    totals <- pm_combined() # for the per-month total label and the average line
+
     hover_text <- paste0(
-      format(data$Month_Date, "%Y-%m"), "<br>Dividends: $", format(round(data$dividends_this_period, 0), big.mark = ",", trim = TRUE),
-      ifelse(data$Is_Estimated, " (partly estimated)", "")
+      format(data$Month_Date, "%Y-%m"), "<br>", data$account_label,
+      "<br>Dividends: $", format(round(data$dividends_this_period, 0), big.mark = ",", trim = TRUE),
+      ifelse(data$Is_Estimated, " (estimated)", "")
     )
-    avg_dividend <- mean(data$dividends_this_period, na.rm = TRUE)
+    avg_dividend <- mean(totals$dividends_this_period, na.rm = TRUE)
+
+    # One label per month showing the stack's total, rather than per-segment
+    # labels (which would just repeat account_label's own dollar figure and
+    # clutter a stacked chart) — positioned just above the top of each bar.
+    total_labels <- lapply(seq_len(nrow(totals)), function(i) {
+      list(
+        x = totals$Month_Date[i], y = totals$dividends_this_period[i],
+        text = paste0("$", format(round(totals$dividends_this_period[i], 0), big.mark = ",", trim = TRUE)),
+        showarrow = FALSE, yanchor = "bottom", yshift = 4,
+        font = list(size = 11, color = "#333333")
+      )
+    })
+    avg_label <- list(
+      xref = "paper", x = 1, yref = "y", y = avg_dividend,
+      text = paste0("Avg: $", format(round(avg_dividend, 0), big.mark = ",", trim = TRUE)),
+      showarrow = FALSE, xanchor = "left", yanchor = "bottom",
+      font = list(size = 11, color = "#555555")
+    )
 
     plot_ly(
-      data, x = ~Month_Date, y = ~dividends_this_period, type = "bar",
-      marker = list(color = "#3182bd", opacity = bar_opacity),
-      text = bar_labels, textposition = "outside",
-      hovertext = hover_text, hoverinfo = "text"
+      data, x = ~Month_Date, y = ~dividends_this_period, color = ~account_label, colors = pm_group_palette,
+      type = "bar", hovertext = hover_text, hoverinfo = "text"
     ) |>
       layout(
-        xaxis = list(title = "Month"),
+        barmode = "stack",
+        xaxis = list(title = ""),
         yaxis = list(title = "Dividends Received"),
+        legend = list(orientation = "h", y = -0.2),
         shapes = list(list(
           type = "line", xref = "paper", x0 = 0, x1 = 1,
           yref = "y", y0 = avg_dividend, y1 = avg_dividend,
           line = list(color = "#555555", dash = "dash", width = 1.5)
         )),
-        annotations = list(list(
-          xref = "paper", x = 1, yref = "y", y = avg_dividend,
-          text = paste0("Avg: $", format(round(avg_dividend, 0), big.mark = ",")),
-          showarrow = FALSE, xanchor = "left", yanchor = "bottom",
-          font = list(size = 11, color = "#555555")
-        ))
+        annotations = c(total_labels, list(avg_label))
       )
   })
 
