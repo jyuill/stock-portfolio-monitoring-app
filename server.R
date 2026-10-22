@@ -172,7 +172,8 @@ server <- function(input, output, session) {
     from <- str_to_upper(coalesce(from_currency, "CAD"))
     to <- str_to_upper(coalesce(to_currency, "CAD"))
     output <- as.numeric(amount)
-    fx_vec <- rep(as.numeric(fx_usdcad)[1], length(output))
+    # fx_usdcad is either one rate for everything or one rate per amount.
+    fx_vec <- if (length(fx_usdcad) == length(output)) as.numeric(fx_usdcad) else rep(as.numeric(fx_usdcad)[1], length(output))
 
     idx_usd_to_cad <- from == "USD" & to == "CAD"
     output[idx_usd_to_cad] <- output[idx_usd_to_cad] * fx_vec[idx_usd_to_cad]
@@ -905,9 +906,78 @@ server <- function(input, output, session) {
   # sidebar (whole-account cash+securities balances vs. per-symbol holdings),
   # so it intentionally doesn't hook into that filter — figures below are
   # always across all statement accounts.
-  portfolio_monthly_r <- reactive({
+  # Follows the sidebar Currency View: in CAD view, USD accounts (per the
+  # sheet's 'currency' column, e.g. TD-USD) are converted at each month's
+  # month-end USD/CAD rate (portfolio_monthly_fx, from global_data.R), falling
+  # back to the current spot rate where a month's rate is missing. Beginning
+  # balances use the prior month's rate (they're the prior month's ending
+  # balance) and change_in_balance is recomputed from the converted balances,
+  # so months still chain and the CAD change includes FX moves on USD holdings.
+  portfolio_monthly_all_r <- reactive({
     data_version()
-    portfolio_monthly_data
+    data <- portfolio_monthly_data
+    if (nrow(data) == 0 || target_currency() != "CAD") {
+      return(data)
+    }
+
+    fx_by_month <- portfolio_monthly_fx
+    spot_rate <- get_usdcad_rate()
+    month_rate <- function(m) coalesce(fx_by_month$usdcad[match(m, fx_by_month$Month_Date)], spot_rate)
+
+    data |>
+      mutate(
+        fx_end = month_rate(Month_Date),
+        fx_begin = month_rate(Month_Date %m-% months(1)),
+        beginning_balance = convert_amount(beginning_balance, currency, "CAD", fx_begin),
+        ending_balance = convert_amount(ending_balance, currency, "CAD", fx_end),
+        change_in_balance = ifelse(
+          is.na(ending_balance) | is.na(beginning_balance),
+          convert_amount(change_in_balance, currency, "CAD", fx_end),
+          ending_balance - beginning_balance
+        ),
+        dividends_this_period = convert_amount(dividends_this_period, currency, "CAD", fx_end),
+        dividends_ytd = convert_amount(dividends_ytd, currency, "CAD", fx_end),
+        ending_cash_balance = convert_amount(ending_cash_balance, currency, "CAD", fx_end),
+        notable_contribution = convert_amount(notable_contribution, currency, "CAD", fx_end),
+        currency = ifelse(str_to_upper(coalesce(currency, "CAD")) %in% c("USD", "CAD"), "CAD", currency)
+      ) |>
+      select(-fx_end, -fx_begin)
+  })
+
+  pm_currency_label <- reactive({
+    if (target_currency() == "CAD") "CAD" else "native currency"
+  })
+
+  pm_month_choices <- reactiveVal(character())
+
+  # Keep the month picker's choices in sync with the loaded months (labelled
+  # "Sep 2026", valued by Month_Date). Defaults to all months; on a refresh,
+  # if every month was selected, any newly loaded month is selected too,
+  # otherwise the user's selection is kept.
+  observeEvent(portfolio_monthly_all_r(), {
+    data <- portfolio_monthly_all_r()
+    months_available <- sort(unique(data$Month_Date))
+    choices <- setNames(as.character(months_available), format(months_available, "%b %Y"))
+
+    current <- isolate(input$pm_months)
+    previous_choices <- isolate(pm_month_choices())
+    selected <- if (length(current) == 0 || setequal(current, previous_choices)) {
+      choices
+    } else {
+      intersect(current, choices)
+    }
+    pm_month_choices(unname(choices))
+    updateSelectizeInput(session, "pm_months", choices = choices, selected = selected)
+  })
+
+  # An empty selection is treated as "all months" rather than an empty tab.
+  portfolio_monthly_r <- reactive({
+    data <- portfolio_monthly_all_r()
+    selected <- input$pm_months
+    if (nrow(data) == 0 || length(selected) == 0) {
+      return(data)
+    }
+    data |> filter(as.character(Month_Date) %in% selected)
   })
 
   pm_combined <- reactive({
@@ -1064,19 +1134,50 @@ server <- function(input, output, session) {
     )
   })
 
+  output$pm_period_change <- renderValueBox({
+    combined <- pm_combined()
+    if (nrow(combined) == 0) {
+      return(valueBox(value = "N/A", subtitle = "Change in Balance (Selected Period)", icon = icon("arrow-trend-up"), color = "light-blue"))
+    }
+    # Sum of the selected months' changes (including deposits/withdrawals, same
+    # as the monthly figures), so excluded months in between don't count; % is
+    # relative to the first selected month's opening balance.
+    first <- combined |> filter(Month_Date == min(Month_Date))
+    last <- combined |> filter(Month_Date == max(Month_Date))
+    period_change <- sum(combined$change_in_balance, na.rm = TRUE)
+    change_pct <- ifelse(first$beginning_balance != 0, period_change / first$beginning_balance, NA_real_)
+    label <- paste0(
+      fmt_currency(period_change, 0),
+      " (", ifelse(is.na(change_pct), "N/A", paste0(round(change_pct * 100, 1), "%")), ")"
+    )
+    valueBox(
+      value = label,
+      subtitle = paste0(
+        "Change in Balance (", nrow(combined), " month", if (nrow(combined) != 1) "s" else "", ": ",
+        format(first$Month_Date, "%Y-%m"), " to ", format(last$Month_Date, "%Y-%m"), ")",
+        if (any(combined$Is_Estimated)) " — includes estimate" else ""
+      ),
+      icon = icon(ifelse(period_change >= 0, "arrow-trend-up", "arrow-trend-down")),
+      color = ifelse(period_change >= 0, "green", "red")
+    )
+  })
+
   output$pm_dividends_ttm <- renderValueBox({
     combined <- pm_combined()
     if (nrow(combined) == 0) {
       return(valueBox(value = "N/A", subtitle = "Dividends (Trailing 12mo)", icon = icon("coins"), color = "yellow"))
     }
-    cutoff <- max(combined$Month_Date) - months(11)
-    ttm_dividends <- combined |>
-      filter(Month_Date >= cutoff) |>
+    # Trailing 12 months ending at the selected range's last month, taken from
+    # the unfiltered data so a short selected range doesn't understate it.
+    range_end <- max(combined$Month_Date)
+    cutoff <- range_end - months(11)
+    ttm_dividends <- portfolio_monthly_all_r() |>
+      filter(Month_Date >= cutoff, Month_Date <= range_end) |>
       pull(dividends_this_period) |>
       sum(na.rm = TRUE)
     valueBox(
       value = fmt_currency(ttm_dividends, 0),
-      subtitle = "Dividends Received (Trailing 12mo, Combined)",
+      subtitle = paste0("Dividends Received (Trailing 12mo to ", format(range_end, "%Y-%m"), ", Combined)"),
       icon = icon("coins"),
       color = "yellow"
     )
@@ -1089,8 +1190,8 @@ server <- function(input, output, session) {
     plot_ly() |>
       add_estimate_aware_trace(data, name = "Combined", color = "#2ca25f", show_name_in_legend = FALSE) |>
       layout(
-        xaxis = list(title = "Month"),
-        yaxis = list(title = "Ending Balance (as reported, native currency)", rangemode = "tozero"),
+        xaxis = list(title = ""),
+        yaxis = list(title = paste0("Ending Balance (", pm_currency_label(), ")"), rangemode = "tozero"),
         showlegend = FALSE
       )
   })
@@ -1111,8 +1212,8 @@ server <- function(input, output, session) {
 
     p |>
       layout(
-        xaxis = list(title = "Month"),
-        yaxis = list(title = "Ending Balance (as reported, native currency)"),
+        xaxis = list(title = ""),
+        yaxis = list(title = paste0("Ending Balance (", pm_currency_label(), ")")),
         legend = list(orientation = "h", y = -0.2)
       )
   })
@@ -1132,7 +1233,7 @@ server <- function(input, output, session) {
       marker = list(color = bar_colors, opacity = bar_opacity),
       hovertext = hover_text, hoverinfo = "text"
     ) |>
-      layout(xaxis = list(title = ""), yaxis = list(title = "Change in Balance"))
+      layout(xaxis = list(title = ""), yaxis = list(title = paste0("Change in Balance (", pm_currency_label(), ")")))
   })
 
   output$pm_growth_rate_bar <- renderPlotly({
@@ -1169,7 +1270,7 @@ server <- function(input, output, session) {
       layout(
         barmode = "stack",
         xaxis = list(title = ""),
-        yaxis = list(title = "Ending Cash Balance (native currency)"),
+        yaxis = list(title = paste0("Ending Cash Balance (", pm_currency_label(), ")")),
         legend = list(orientation = "h", y = -0.2)
       )
   })
@@ -1211,7 +1312,7 @@ server <- function(input, output, session) {
       layout(
         barmode = "stack",
         xaxis = list(title = ""),
-        yaxis = list(title = "Dividends Received"),
+        yaxis = list(title = paste0("Dividends Received (", pm_currency_label(), ")")),
         legend = list(orientation = "h", y = -0.2),
         shapes = list(list(
           type = "line", xref = "paper", x0 = 0, x1 = 1,
@@ -1228,12 +1329,12 @@ server <- function(input, output, session) {
 
     table_data <- data |>
       mutate(Estimated = ifelse(Is_Estimated, "Yes", "")) |>
-      select(account_label, institution, month, beginning_balance, ending_balance,
+      select(account_label, institution, currency, month, beginning_balance, ending_balance,
              change_in_balance, dividends_this_period, dividends_ytd,
              ending_cash_balance, notable_contribution, Estimated) |>
       arrange(desc(month), account_label) |>
       rename(
-        Account = account_label, Institution = institution, Month = month,
+        Account = account_label, Institution = institution, Currency = currency, Month = month,
         `Beginning Balance` = beginning_balance, `Ending Balance` = ending_balance,
         Change = change_in_balance, `Dividends (Period)` = dividends_this_period,
         `Dividends (YTD)` = dividends_ytd, `Ending Cash` = ending_cash_balance,

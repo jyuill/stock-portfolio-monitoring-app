@@ -973,6 +973,30 @@ portfolio_monthly_data <- tryCatch({
   )
 })
 
+# Month-end USD/CAD rates for the Portfolio Overview tab's CAD view, so a USD
+# account's historical balances convert at the rate in effect at each
+# statement date rather than today's. Covers the month before the earliest
+# statement month too, since a month's beginning balance is the prior month's
+# ending balance. Months with no rate (or a failed fetch) are left out; the
+# server falls back to the current spot rate for those.
+portfolio_monthly_fx <- tryCatch({
+  if (nrow(portfolio_monthly_data) == 0) stop("no monthly portfolio history")
+  fx_from <- min(portfolio_monthly_data$Month_Date) %m-% months(1)
+  fx_hist <- getSymbols("USDCAD=X", src = "yahoo", from = fx_from, to = Sys.Date(),
+                        auto.assign = FALSE, warnings = FALSE)
+  fx_col <- if ("USDCAD=X.Close" %in% colnames(fx_hist)) "USDCAD=X.Close" else "USDCAD=X.Adjusted"
+  data.frame(date = index(fx_hist), usdcad = as.numeric(fx_hist[, fx_col])) |>
+    filter(!is.na(usdcad), usdcad > 0) |>
+    mutate(Month_Date = floor_date(date, "month")) |>
+    group_by(Month_Date) |>
+    slice_max(date, n = 1) |>
+    ungroup() |>
+    select(Month_Date, usdcad)
+}, error = function(e) {
+  cat("  - Could not load month-end USD/CAD rates (Portfolio Overview will use the current rate):", e$message, "\n")
+  data.frame(Month_Date = as.Date(character()), usdcad = numeric())
+})
+
 # Create a summary for display
 data_summary <- list(
   portfolio_count = nrow(portfolio_data),

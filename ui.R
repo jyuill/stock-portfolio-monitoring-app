@@ -89,9 +89,21 @@ ui <- dashboardPage(
       # Portfolio Overview Tab (monthly balance trends, from bank/brokerage statements)
       tabItem(tabName = "portfolio_overview",
         fluidRow(
-          valueBoxOutput("pm_total_value", width = 4),
-          valueBoxOutput("pm_month_change", width = 4),
-          valueBoxOutput("pm_dividends_ttm", width = 4)
+          column(12,
+            # Choices are populated from the loaded statement months in server.R.
+            selectizeInput(
+              "pm_months", "Months included:",
+              choices = NULL, multiple = TRUE, width = "100%",
+              options = list(plugins = list("remove_button"), placeholder = "All months")
+            )
+          )
+        ),
+
+        fluidRow(
+          valueBoxOutput("pm_total_value", width = 3),
+          valueBoxOutput("pm_month_change", width = 3),
+          valueBoxOutput("pm_period_change", width = 3),
+          valueBoxOutput("pm_dividends_ttm", width = 3)
         ),
 
         fluidRow(
