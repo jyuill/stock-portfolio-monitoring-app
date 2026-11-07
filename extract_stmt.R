@@ -1,7 +1,10 @@
 ## extract_stmt.R
-## Extracts key portfolio-level metrics from brokerage statement PDFs and
-## appends a row per month to portfolio_monthly.csv. Two statement formats
-## are supported, auto-detected from the PDF text:
+## -- Run from extract.R --
+## Extracts portfolio-level balance and key metrics 
+##  from mthly brokerage statement PDFs and
+##  appends a row per month to portfolio_monthly.csv then
+##  uploads to gsheet.
+# Two statement formats supported, auto-detected from the PDF text:
 ##   - TD Direct Investing ("Account number: ..."). A single PDF may bundle
 ##     multiple monthly statements back-to-back (each starting on its own
 ##     page with a "<Month> D, YYYY to <Month> D, YYYY" period header) — this
@@ -10,8 +13,8 @@
 ##     CAD and USD legs already combined into one CAD figure by Questrade
 ##     itself, so one row is written per PDF.
 ##
-## Usage:
-##   source("extract_stmt.R")
+## Most Basic Usage:
+##   load functions
 ##   extract_statement("path/to/Statement_20LWH2.pdf", csv_path = "data/portfolio_monthly.csv")
 ##   extract_statement("path/to/Individual RRSP_2026-01-01.pdf", csv_path = "data/portfolio_monthly.csv")
 
@@ -351,12 +354,77 @@ extract_statement <- function(pdf_path, csv_path = "data/portfolio_monthly.csv")
 # extract_statement("Statement_Sept2026.pdf", csv_path = "data/portfolio_monthly.csv")
 # extract_statement("Individual RRSP_2026-01-01.pdf", csv_path = "data/portfolio_monthly.csv")
 
+# --- Move downloaded statement PDFs into the stmts archive -------------------
+# Downloads holds plenty of unrelated PDFs, so statements are recognised by
+# filename. Add a pattern here if a broker's download name changes.
+STMT_FILE_PATTERNS <- c(
+  "^Statement_.*\\.pdf$",              # TD, e.g. Statement_20LWH2.pdf
+  "^Questrade .*Statement.*\\.pdf$",   # Questrade (renamed)
+  "^Individual RRSP_.*\\.pdf$"         # Questrade (as downloaded)
+)
+
+# file.rename() keeps the file's mtime, which process_stmts() relies on to
+# decide whether a statement is new. An existing file in stmts_dir is never
+# overwritten (TD reuses names like Statement_20LWH2.pdf every month): the
+# incoming file gets its download date appended instead, plus a counter if
+# that name is also taken.
+import_stmts <- function(downloads_dir = "~/Downloads", stmts_dir = "stmts") {
+  dl_dir <- path.expand(downloads_dir)
+  if (!dir.exists(dl_dir)) {
+    message("Downloads directory not found: ", dl_dir, " — no statements imported.")
+    return(invisible(character(0)))
+  }
+  dir.create(stmts_dir, showWarnings = FALSE, recursive = TRUE)
+
+  names <- list.files(dl_dir)
+  names <- names[Reduce(`|`, lapply(STMT_FILE_PATTERNS, \(p) grepl(p, names, ignore.case = TRUE)))]
+  if (length(names) == 0) {
+    message("No new statement PDFs in ", dl_dir)
+    return(invisible(character(0)))
+  }
+
+  moved <- character(0)
+  for (nm in names) {
+    src <- file.path(dl_dir, nm)
+    dest <- file.path(stmts_dir, nm)
+    if (file.exists(dest)) {
+      stem <- tools::file_path_sans_ext(nm)
+      ext <- tools::file_ext(nm)
+      base <- paste0(stem, "_", format(file.info(src)$mtime, "%Y-%m-%d"))
+      dest <- file.path(stmts_dir, paste0(base, ".", ext))
+      i <- 2L
+      while (file.exists(dest)) {
+        dest <- file.path(stmts_dir, paste0(base, "_", i, ".", ext))
+        i <- i + 1L
+      }
+    }
+    # rename fails across volumes; fall back to copy (keeping mtime) + remove.
+    ok <- file.rename(src, dest) ||
+      (file.copy(src, dest, copy.date = TRUE) && file.remove(src))
+    if (ok) {
+      message("Moved ", nm, " -> ", dest)
+      moved <- c(moved, dest)
+    } else {
+      warning("Could not move ", src, " to ", stmts_dir, "; move it manually.")
+    }
+  }
+  invisible(moved)
+}
+
+# MAIN FUNCTION - one to rule all
 # --- Process every statement in a folder, skipping ones already up to date -
 # A statement PDF is (re)processed only if it was downloaded (by file mtime)
 # more recently than the last date_processed recorded for any account found
 # inside it. This lets statements for any number of accounts, with any
 # filenames, be dropped into `stmts_dir` and picked up automatically.
-process_stmts <- function(stmts_dir = "stmts", csv_path = "data/portfolio_monthly.csv") {
+#
+# Before processing, statement PDFs are moved from downloads_dir into stmts_dir
+# (see import_stmts()), so stmts_dir stays the archive and Downloads is left
+# clear for future downloads. Pass downloads_dir = NULL to skip the import.
+process_stmts <- function(stmts_dir = "stmts", csv_path = "data/portfolio_monthly.csv",
+                          downloads_dir = "~/Downloads") {
+
+  if (!is.null(downloads_dir)) import_stmts(downloads_dir, stmts_dir)
 
   pdf_files <- list.files(stmts_dir, pattern = "\\.pdf$", full.names = TRUE, ignore.case = TRUE)
 

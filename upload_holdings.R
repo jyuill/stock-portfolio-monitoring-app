@@ -1,5 +1,6 @@
 # Functions to upload broker-export holdings CSVs into the portfolio Google Sheet.
-#
+# -- Run from upload.R --
+# alternative usages:
 # Usage (interactive):
 #   Run from batch_upload.R to use functions
 #  alternate manual option:
@@ -95,6 +96,22 @@ find_latest_csv <- function(file_id, downloads_dir = "~/Downloads") {
   }
   info <- file.info(files)
   files[order(info$mtime, decreasing = TRUE)][1]
+}
+
+# ---- Post-upload cleanup ----------------------------------------------------
+
+# Delete a broker export once it has been uploaded, so a later run (or a later
+# download with a similar name) can't pick up a stale file by mistake.
+# Warns rather than errors on failure: the upload has already succeeded.
+delete_processed_file <- function(path) {
+  if (is.na(path) || !file.exists(path)) return(invisible(FALSE))
+  ok <- file.remove(path)
+  if (ok) {
+    cat("  Deleted   :", path, "\n")
+  } else {
+    warning("Uploaded but could not delete ", path, "; remove it manually.")
+  }
+  invisible(ok)
 }
 
 # ---- CSV parsing ------------------------------------------------------------
@@ -278,7 +295,8 @@ upload_holdings <- function(
   file_id,
   downloads_dir = "~/Downloads",
   sheet_url = SHEET_URL,
-  dry_run = FALSE
+  dry_run = FALSE,
+  delete_after = TRUE # delete the source file from downloads_dir after a successful upload
 ) {
   cat("=== Upload holdings: ", file_id, " ===\n", sep = "")
   # get holding source info that matches file_id; error if not exactly one match
@@ -400,12 +418,15 @@ upload_holdings <- function(
     )
     cat("\U2713 Uploaded ", nrow(upload_df), " rows to ", cfg$sheet_tab,
         " starting at ", write_range, "\n", sep = "")
+    # Only reached after a successful write (dry runs return earlier and
+    # Sheets errors stop() above), so the file is never lost unprocessed.
+    if (delete_after) delete_processed_file(file_path)
     invisible(upload_df)
-    
+
     } # end parsed exists test
   } # end upload_holdings() function
 
-# ---- Portfolio monthly summary upload ---------------------------------------
+# ---- Portfolio monthly summary stmt upload ---------------------------------------
 # Uploads data/portfolio_monthly.csv (written by extract_stmt.R) to the
 # 'portfolio_mthly' tab, starting at row 5, in the same Google Sheet as
 # upload_holdings(). Unlike upload_holdings(), this replaces the tab's entire

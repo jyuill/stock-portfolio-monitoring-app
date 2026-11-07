@@ -124,10 +124,16 @@ Not sure if all of this still applies, since changes have been made to the app.
 ```
 
 ## Data Processing Details
+Two types:
+1. Portfolio: snapshot of current holdings
+2. Portfolio Balance: monthly summary of portfolio value changes.
+
+Separate processes for each, explained below.
 
 ### Update Portfolio Data
+(current snapshot - separate from **Portfolio Balance** data explained below)
 1. **Export/download** from broker sites - see instructions in holdings sheets in Google Sheets.
-2. **Run `upload.R`** top section to use `upload_holdings.R` functions to upload broker site downloads to gsheets from `downloads` folder to Google Sheets.
+2. **Run `upload.R`** top section to use `upload_holdings.R` functions to upload broker site downloads to gsheets from `downloads` folder to Google Sheets. Each file is deleted from the downloads folder after a successful upload (not on `dry_run = TRUE`; pass `delete_after = FALSE` to keep it).
 
 ### Portfolio Data Processing
 1. Reads specified holdings sheets from Google Sheets
@@ -137,16 +143,17 @@ Not sure if all of this still applies, since changes have been made to the app.
 5. Aggregates quantities across accounts for each symbol
 6. Removes invalid entries (missing symbols, zero quantities)
 
-### Portfolio Balance Data
+### Update Portfolio Balance Data
 Separate from the holdings-level **Portfolio Data** above, this tracks month-by-month, account-level balances (beginning/ending balance, dividends, cash) extracted directly from TD Direct Investing statement PDFs — not from Google Sheets.
 
-**Setup**:
-1. Download statement PDFs from TD and drop them into the `stmts/` folder (any filenames; a single PDF may bundle several months back-to-back).
+**Setup & Run**:
+1. Download statement PDFs from TD / Questrade to the downloads folder (a single TD PDF may bundle several months back-to-back). `process_stmts()` first moves any PDF matching `STMT_FILE_PATTERNS` in `extract_stmt.R` (`Statement_*`, `Questrade *Statement*`, `Individual RRSP_*`) from `~/Downloads` into the **`stmts/`** archive folder. An existing file in `stmts/` is never overwritten: the incoming one gets its download date appended. PDFs can also still be dropped into `stmts/` directly.
 2. Run:
    ```r
    source("extract.R")
    ```
    This calls `process_stmts()`, which extracts every month found in each PDF and appends/updates rows in `data/portfolio_monthly.csv`.
+   Also runs `update_portfolio_monthly()` which is in `upload_holdings.R` and uploads data to gsheet.
 
 **Behavior**:
 - A statement is (re)processed only if its file was downloaded (by file mtime) more recently than the last time its account(s) were processed, so re-running `extract.R` after dropping in new statements only processes what's new.
