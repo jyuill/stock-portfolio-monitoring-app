@@ -15,32 +15,26 @@ library(tidyverse)
 source('upload_holdings.R')
 
 # AFTER EXPORTING FILES TO DOWNLOADS FOLDER, RUN THIS TO UPLOAD TO GSHEETS
-for (i in 1:nrow(HOLDINGS_SOURCES)) {
-  upload_holdings(
-    file_id = HOLDINGS_SOURCES$file_id[i]
+# each call is wrapped in tryCatch so a problem with one file (malformed export,
+# Sheets error, etc.) is reported but doesn't stop the remaining uploads.
+# missing files are already handled inside upload_holdings() (message + skip).
+failed <- character(0)
+for (i in seq_len(nrow(HOLDINGS_SOURCES))) {
+  fid <- HOLDINGS_SOURCES$file_id[i]
+  tryCatch(
+    upload_holdings(file_id = fid),
+    error = function(e) {
+      cat("  \U2717 ERROR for ", fid, ": ", conditionMessage(e), "\n\n", sep = "")
+      failed <<- c(failed, fid)
+    }
   )
+}
+if (length(failed) > 0) {
+  cat("Uploads with errors (fix and re-run via upload_individual.R):",
+      paste(failed, collapse = ", "), "\n")
+} else {
+  cat("All available files processed without errors.\n")
 }
 # DONE: unless errors, everything should be uploaded to gsheets
 # - ready to be viewed in portfolio tracker app
-
-#============
-# individual run for testing
-hs <- 5 # identify file name by row in HOLDINGS_SOURCES
-upload_holdings(
-   file_id = HOLDINGS_SOURCES$file_id[hs]
-)
-
-# test individual functions, if bugs
-
-file_id <- HOLDINGS_SOURCES$file_id[1]
-downloads_dir <- "~/Downloads"
-sheet_url <- SHEET_URL
-tab_name <- HOLDINGS_SOURCES$sheet_tab[1]
-
-existing <- find_existing_snapshot_rows(
-  
-)
-empty <- next_empty_row(
-  sheet_url = sheet_url,
-  tab_name = HOLDINGS_SOURCES$sheet_tab[1]
-)
+# - if errors or testing needed: upload_individual.R
